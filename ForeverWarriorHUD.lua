@@ -153,6 +153,16 @@ local DEFAULTS = {
     artBanner = "a",     -- which header picture: "a" painted, "b" the alternate
     notify = { cdOnly = true, sweep = true, cooldownDark = true, readyFlash = true, activeGlow = true, usableDim = true, rangeTint = true },
     cooldownText = true, -- numeric countdown on every ability icon
+    -- Text engine. One block per HUD text; sizes match the fonts the
+    -- original inherited (GameFontHighlightSmall 10, GameFontNormal 12).
+    text = {
+        font = "default", outline = "", shadow = true,
+        useSkinColor = true, r = 1, g = 1, b = 1,
+        energy = { size = 10, anchor = "CENTER", x = 0, y = 0, format = "cur_max" },
+        regen  = { size = 10, anchor = "CENTER", x = 0, y = 0, format = "rate", decimals = 1 },
+        swing  = { size = 10, anchor = "CENTER", x = 0, y = 0, decimals = 2 },
+        timer  = { size = 10, anchor = "BOTTOMRIGHT", x = -1, y = 1, format = "auto" },
+    },
     elements = {
         energy = { enabled = true, x = 0, y = 0,   w = 220, h = 16, alpha = 1.0, scale = 1.0, rot = 0,
                    showText = true },
@@ -192,7 +202,7 @@ end
 -- to defaults or loading a profile can never delete them.
 local CONFIG_KEYS = {
     "baseX", "baseY", "scale", "shown", "locked", "autoHide", "autoHideOOC",
-    "orientation", "gridSnap", "gridSize", "sticky", "skin", "cooldownText", "notify", "custom", "customOn", "elements", "spells",
+    "orientation", "gridSnap", "gridSize", "sticky", "skin", "cooldownText", "notify", "custom", "customOn", "text", "frames", "map", "elements", "spells",
 }
 DEFAULTS.profiles = {}
 local panel
@@ -462,6 +472,7 @@ end
 -- Forward declarations
 local ApplyElement, ApplySpell, ApplyAll, RefreshConfig, RefreshProfileList
 local ApplySkin, PaintSwing, LayoutSwing, ReflowAll
+local TXT, UF, MP = {}, {}, {}   -- text engine, unit frames, map: see their sections below.
 
 -----------------------------------------------------------------------
 -- Element frames (energy, swing, combo)
@@ -2170,7 +2181,9 @@ local function BuildRegenOptions(flow)
         cfg().regenMax = v
         apply()
     end)
-    Row(flow, LAYOUT.check, regenUI.rateCB, regenUI.maxSlider)
+    -- a slider row needs LAYOUT.slider height: at LAYOUT.check the "Full at" label
+    -- overlapped the font-size slider of the text engine below it
+    Row(flow, LAYOUT.slider, regenUI.rateCB, regenUI.maxSlider)
 end
 
 local ELEMENT_INFO = {
@@ -2182,7 +2195,7 @@ local ELEMENT_INFO = {
 }
 -- Width, height and opacity only: place, size and rotation are done with the
 -- mouse on the item itself.
-local elemCB, elemW, elemH, elemA = {}, {}, {}, {}
+local elemCB, elemW, elemH, elemA, elemS = {}, {}, {}, {}, {}
 for _, info in ipairs(ELEMENT_INFO) do
     local key = info.key
     elemCB[key] = MakeCheck(hudChild, "FRHWCB_" .. key, 340, 0, "Show", function(self)
@@ -2198,6 +2211,10 @@ for _, info in ipairs(ELEMENT_INFO) do
     elemA[key] = MakeSlider(hudChild, "FRHWA_" .. key, 12,  0, 190, 0.1, 1, 0.05, "Opacity", function(v)
         db.elements[key].alpha = v; ApplyElement(key)
     end)
+    -- size from the menu as well as with CTRL + wheel on the item (same saved value)
+    elemS[key] = MakeSlider(hudChild, "FRHWS_" .. key, 240, 0, 190, 0.5, 3, 0.05, "Scale", function(v)
+        db.elements[key].scale = v; ApplyElement(key)
+    end)
     HeaderRow(hudFlow, info.label, elemCB[key])
     Row(hudFlow, LAYOUT.slider, elemW[key], elemH[key])
     if key == "energy" then
@@ -2210,6 +2227,7 @@ for _, info in ipairs(ELEMENT_INFO) do
     else
         Row(hudFlow, LAYOUT.slider, elemA[key])
     end
+    Row(hudFlow, LAYOUT.slider, elemS[key])
     if key == "swing" then BuildSwingOptions(hudFlow) end
     if key == "regen" then BuildRegenOptions(hudFlow) end
     ME.Mark(key, hudFlow, hudChild)   -- where this element's later rows go (2 build: its text options)
@@ -2225,6 +2243,8 @@ local function ResetToDefaults()
     db.profiles = kept
     db.schemes = keptSchemes
     ApplySkin(db.skin)
+    UF.Apply()
+    MP.Apply()
     ApplyAll(); FRHW_RefreshPanel()
     if RefreshProfileList then RefreshProfileList() end
 end
@@ -2235,7 +2255,7 @@ StaticPopupDialogs["FRHW_CONFIRM_RESET"] = {
     OnAccept = function() ResetToDefaults() end,
     timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
 }
-NoteRow(hudFlow, "Place, size and turn every item with the mouse on the item itself. The Help tab shows how.")
+NoteRow(hudFlow, "Place, size and turn every item with the mouse on the item itself, or set its Scale here or on the Abilities tab. The Help tab shows how.")
 
 -- ========================== Config tab ==========================
 local cfgScroll, cfgChild = MakeScroll("FRHWConfigScroll", pageConfig, -4)
@@ -2268,7 +2288,7 @@ for _, n in ipairs(ME.NOTIFY) do
 end
 DividerRow(cfgFlow)
 
-local cfgCB, cfgA = {}, {}
+local cfgCB, cfgA, cfgS = {}, {}, {}
 for _, a in ipairs(ABILITIES) do
     local key = a.key
     cfgCB[key] = MakeCheck(cfgChild, "FRHWCFGCB_" .. key, 340, 0, "On", function(self)
@@ -2278,8 +2298,24 @@ for _, a in ipairs(ABILITIES) do
     cfgA[key] = MakeSlider(cfgChild, "FRHWCFGA_" .. key, 6,   0, 190, 0.1, 1, 0.05, "Opacity", function(v)
         db.spells[key].alpha = v; ApplySpell(key)
     end)
+    -- icon size from the menu (the same saved value as CTRL + wheel on the icon)
+    cfgS[key] = MakeSlider(cfgChild, "FRHWCFGS_" .. key, 230, 0, 190, 0.5, 3, 0.05, "Scale", function(v)
+        db.spells[key].scale = v; ApplySpell(key)
+    end)
     HeaderRow(cfgFlow, a.name, cfgCB[key])
-    Row(cfgFlow, LAYOUT.slider, cfgA[key])
+    Row(cfgFlow, LAYOUT.slider, cfgA[key], cfgS[key])
+    -- typeface and number size of this ability's countdown (2 build)
+    TXT.itemFont = TXT.itemFont or {}
+    TXT.itemSize = TXT.itemSize or {}
+    TXT.itemFont[key] = MakeButton(cfgChild, "Font", 6, 0, 190, 22, function(self)
+        TXT.OpenPicker(self, db.spells[key].font, true, function(font)
+            db.spells[key].font = font; TXT.Apply(); TXT.Refresh()
+        end)
+    end, "FRHWCFGF_" .. key)
+    TXT.itemSize[key] = MakeSlider(cfgChild, "FRHWCFGFS_" .. key, 230, 0, 190, 0, 40, 1, "Number size (0 = Text tab)", function(v)
+        db.spells[key].fontSize = (v >= 6) and v or nil; TXT.Apply()
+    end)
+    Row(cfgFlow, LAYOUT.slider, TXT.itemFont[key], TXT.itemSize[key])
     -- a thin divider under each spell keeps the list readable
     DividerRow(cfgFlow)
 end
@@ -2291,6 +2327,7 @@ RefreshConfig = function()
         local key = a.key
         cfgCB[key]:SetChecked(db.spells[key].enabled)
         cfgA[key]:SetValue(db.spells[key].alpha or 1)
+        cfgS[key]:SetValue(db.spells[key].scale or 1)
     end
 end
 
@@ -2548,6 +2585,9 @@ local function ApplyConfig(src)
     db.gridSnap    = src.gridSnap ~= false
     db.sticky      = src.sticky ~= false
     db.cooldownText = src.cooldownText ~= false
+    TXT.Clamp(src.text)
+    UF.Clamp(src.frames)
+    MP.Clamp(src.map)
     db.orientation = "h"   -- kept for old profiles only: every item has its own rotation now
     ME.ClampNotify(src.notify)
     ME.ClampCustom(src.custom, src.customOn)
@@ -2594,11 +2634,14 @@ local function ApplyConfig(src)
             e.rot     = ME.Norm(s.rot, true)
             e.alpha   = Num(s.alpha, 0.05, 1, def.alpha)
             e.scale   = Num(s.scale, 0.2, 4, def.scale)
+            TXT.ClampItem(e, s)
         else
             db.spells[key] = DeepCopy(def)
         end
     end
     ApplySkin(db.skin)
+    UF.Apply()
+    MP.Apply()
     ApplyAll()
     FRHW_RefreshPanel()
     return true
@@ -2843,7 +2886,7 @@ do
     HeaderRow(flow, "Editing the HUD with the mouse")
     Para("This only works while this window is open and Lock (HUD tab) is off. Point at any bar or icon: it lights up and a tooltip names it.")
     Para("MOVE: hold CTRL, then hold the left mouse button on the item. It follows the cursor. Let go to drop it.")
-    Para("SIZE: hold CTRL and roll the mouse wheel over the item. Up is bigger, down is smaller.")
+    Para("SIZE: hold CTRL and roll the mouse wheel over the item. Up is bigger, down is smaller. Or drag its Scale slider: bars are on the HUD tab, icons on the Abilities tab (the same size either way).")
     Para("TURN: hold CTRL, then hold the right mouse button on the item and drag around it. It stays as you leave it.")
     Para("STRAIGHTEN: double-click the right mouse button on the item. It goes back to its original orientation.")
     Para("Icons turn to any angle. Bars, combo points and the recent-actions row turn in quarter turns; their text stays upright.")
@@ -2959,6 +3002,7 @@ ApplyAll = function()
     ApplyElement("combo")
     ApplyElement("trail")
     for key in pairs(spellIcons) do ApplySpell(key) end
+    TXT.Apply()
 end
 -- exposed so a macro or a test can re-apply the live configuration on demand
 FRHW_ApplyAll = function() if db then ApplyAll() end end
@@ -2974,6 +3018,2614 @@ local function Col(c, a)
     return c[1], c[2], c[3], a or c[4] or 1
 end
 
+-----------------------------------------------------------------------
+-- Text engine (the "2" build): font, size, outline, shadow, colour,
+-- placement and number format of every text on the HUD.
+--
+-- Shape borrowed from ElvUI's FontTemplate / UpdateFontTemplates: one table
+-- of settings (db.text), one Apply that pushes it to every font string, and
+-- format strings that are built once in Apply and only *used* per frame.
+-- Nothing here runs on its own timer; the per-frame cost is one table read.
+--
+-- To add an option:  1. default in DEFAULTS.text   2. validate in TXT.Clamp
+--                    3. use it in TXT.Apply (or a formatter)
+--                    4. widget in the "Text tab" block + a line in TXT.Refresh
+-- Everything lives in the TXT table so the main chunk gains no locals.
+-----------------------------------------------------------------------
+TXT.FONTS = {
+    { key = "default",  name = "Game default" },
+    { key = "friz",     name = "Friz Quadrata", path = "Fonts\\FRIZQT__.TTF" },
+    { key = "arial",    name = "Arial Narrow",  path = "Fonts\\ARIALN.TTF" },
+    { key = "morpheus", name = "Morpheus",      path = "Fonts\\MORPHEUS.TTF" },
+    { key = "skurri",   name = "Skurri",        path = "Fonts\\SKURRI.TTF" },
+}
+TXT.OUTLINES = {
+    { key = "",                   name = "None" },
+    { key = "OUTLINE",            name = "Outline" },
+    { key = "THICKOUTLINE",       name = "Thick outline" },
+    { key = "MONOCHROME,OUTLINE", name = "Pixel outline" },
+}
+TXT.ANCHORS = {
+    { key = "CENTER", name = "Centre" },
+    { key = "LEFT",   name = "Left" },
+    { key = "RIGHT",  name = "Right" },
+    { key = "TOP",    name = "Top" },
+    { key = "BOTTOM", name = "Bottom" },
+    { key = "BOTTOMRIGHT", name = "Bottom right" },
+    { key = "BOTTOMLEFT",  name = "Bottom left" },
+    { key = "TOPRIGHT",    name = "Top right" },
+    { key = "TOPLEFT",     name = "Top left" },
+}
+-- One entry per text on the HUD. formats / decimals are optional; a target
+-- without them simply gets no such control on the Text tab.
+TXT.TARGETS = {
+    { key = "energy", label = "Resource bar text", formats = {
+        { key = "cur_max", name = "Current / max" },
+        { key = "cur",     name = "Current" },
+        { key = "percent", name = "Percent" },
+        { key = "deficit", name = "Deficit" },
+        { key = "none",    name = "Hidden" } } },
+    { key = "regen", label = "Regen bar text", decimals = true, formats = {
+        { key = "rate",       name = "Rate with /s" },
+        { key = "rate_plain", name = "Rate only" },
+        { key = "none",       name = "Hidden" } } },
+    { key = "swing", label = "Swing timer text", decimals = true },
+    { key = "timer", label = "Cooldown numbers on icons", formats = {
+        { key = "auto",    name = "7 then 2:05" },
+        { key = "seconds", name = "Seconds only" },
+        { key = "tenths",  name = "Tenths under 10 s" },
+        { key = "mmss",    name = "Always m:ss" } } },
+}
+
+-- Entry of a { key =, name = } list by key, or nil.
+TXT.Find = function(list, key)
+    for i = 1, #list do
+        if list[i].key == key then return list[i], i end
+    end
+    return nil
+end
+
+-- Key of the entry after `key`, wrapping round. Drives every cycle button.
+TXT.Next = function(list, key)
+    local _, i = TXT.Find(list, key)
+    return list[(i or 0) % #list + 1].key
+end
+
+-- Build the full typeface list, once, at login:
+--   1. the four fonts above,
+--   2. every font file the client itself uses (walks GetFonts(), so the list
+--      is whatever this build of the game really ships),
+--   3. every font another addon registered with LibSharedMedia.
+-- A file is listed once however many font objects or addons point at it.
+TXT.LoadSharedFonts = function()
+    if TXT.sharedLoaded then return end
+    TXT.sharedLoaded = true
+    local seen, extra = {}, {}
+    local function norm(p) return (p:lower():gsub("/", "\\")) end
+    for i = 1, #TXT.FONTS do
+        if TXT.FONTS[i].path then seen[norm(TXT.FONTS[i].path)] = true end
+    end
+    local function add(key, name, path)
+        if type(name) ~= "string" or type(path) ~= "string" or path == "" then return end
+        local n = norm(path)
+        if seen[n] or TXT.Find(TXT.FONTS, key) then return end
+        seen[n] = true
+        extra[#extra + 1] = { key = key, name = name, path = path }
+    end
+    if type(GetFonts) == "function" then
+        local ok, names = pcall(GetFonts)
+        if ok and type(names) == "table" then
+            for i = 1, #names do
+                local obj = _G[names[i]]
+                if type(obj) == "table" and obj.GetFont then
+                    local ok2, path = pcall(obj.GetFont, obj)
+                    if ok2 and type(path) == "string" then
+                        -- "Fonts\\NIM_____.ttf" -> "NIM", "Fonts\\2002B.TTF" -> "2002B"
+                        local base = path:match("([^\\/]+)%.[%a%d]+$") or path
+                        base = base:gsub("_+$", ""):gsub("_+", " ")
+                        add("file:" .. norm(path), base, path)
+                    end
+                end
+            end
+        end
+    end
+    -- a font pack addon (ForeverFonts) lists its files in a global table:
+    -- ForeverFonts = { { name = "Roboto", path = "Interface\\AddOns\\ForeverFonts\\Roboto.ttf" }, ... }
+    if type(_G.ForeverFonts) == "table" then
+        for i = 1, #_G.ForeverFonts do
+            local e = _G.ForeverFonts[i]
+            if type(e) == "table" then add("pack:" .. tostring(e.name), e.name, e.path) end
+        end
+    end
+    if LibStub then
+        local ok, lsm = pcall(LibStub, "LibSharedMedia-3.0", true)
+        if ok and type(lsm) == "table" and lsm.HashTable then
+            for name, path in pairs(lsm:HashTable("font")) do add("lsm:" .. tostring(name), name, path) end
+        end
+    end
+    table.sort(extra, function(a, b) return a.name:lower() < b.name:lower() end)
+    for i = 1, #extra do TXT.FONTS[#TXT.FONTS + 1] = extra[i] end
+end
+
+-- File path for a font key. An unknown key (a shared font whose addon is
+-- gone) is the game's own font.
+TXT.FontPath = function(key)
+    local f = TXT.Find(TXT.FONTS, key)
+    return (f and f.path) or STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
+end
+
+-- Fill and validate a text table from SavedVariables or a profile, then make
+-- it the live one. Same rule as ClampSwing: never trust a stored value.
+TXT.Clamp = function(src)
+    local def = DEFAULTS.text
+    if type(src) ~= "table" then src = def end
+    local t = {}
+    t.font         = type(src.font) == "string" and src.font or def.font
+    t.outline      = TXT.Find(TXT.OUTLINES, src.outline) and src.outline or def.outline
+    t.shadow       = src.shadow ~= false
+    t.useSkinColor = src.useSkinColor ~= false
+    t.r            = Num(src.r, 0, 1, def.r)
+    t.g            = Num(src.g, 0, 1, def.g)
+    t.b            = Num(src.b, 0, 1, def.b)
+    for i = 1, #TXT.TARGETS do
+        local info = TXT.TARGETS[i]
+        local d, s = def[info.key], src[info.key]
+        if type(s) ~= "table" then s = d end
+        local o = {}
+        o.font   = type(s.font) == "string" and s.font or nil   -- nil = the global font
+        o.size   = math.floor(Num(s.size, 6, 40, d.size) + 0.5)
+        o.anchor = TXT.Find(TXT.ANCHORS, s.anchor) and s.anchor or d.anchor
+        o.x      = Num(s.x, -200, 200, d.x)
+        o.y      = Num(s.y, -200, 200, d.y)
+        if info.formats then
+            o.format = TXT.Find(info.formats, s.format) and s.format or d.format
+        end
+        if info.decimals then
+            o.decimals = math.floor(Num(s.decimals, 0, 2, d.decimals) + 0.5)
+        end
+        t[info.key] = o
+    end
+    db.text = t
+end
+
+-- One tracked ability's own typeface and number size (db.spells[key].font /
+-- .fontSize). nil means "same as the Text tab", so an untouched ability
+-- stores nothing extra.
+TXT.ClampItem = function(e, s)
+    e.font = type(s.font) == "string" and s.font or nil
+    local size = Num(s.fontSize, 0, 40, 0)
+    e.fontSize = size >= 6 and math.floor(size + 0.5) or nil
+end
+
+-- r, g, b, a for HUD text: the skin's text colour, or the user's own.
+TXT.Color = function()
+    local t = db and db.text
+    if type(t) == "table" and not t.useSkinColor then return t.r, t.g, t.b, 1 end
+    return Col(currentSkin.text, 1)
+end
+
+-- Colour only. Called from ApplySkin, so a skin change keeps a custom colour.
+TXT.Paint = function()
+    local r, g, b, a = TXT.Color()
+    energy.value:SetTextColor(r, g, b, a)
+    regen.value:SetTextColor(r, g, b, a)
+    swing.time:SetTextColor(r, g, b, a)
+    for _, btn in pairs(spellIcons) do btn.timer:SetTextColor(r, g, b, a) end
+    UF.TextColor()
+    MP.Paint()
+end
+
+-- Set a typeface; a file the client cannot load becomes the game's own font.
+TXT.Font = function(fs, path, size, flags)
+    local ok = pcall(fs.SetFont, fs, path, size, flags)
+    if not ok or not fs:GetFont() then
+        fs:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", size, flags)
+    end
+end
+
+-- Font, size, flags, shadow and placement of one font string.
+-- size overrides o.size (a tracked ability with its own number size).
+TXT.Place = function(fs, parent, o, path, flags, shadow, size)
+    TXT.Font(fs, path, size or o.size, flags)
+    fs:ClearAllPoints()
+    fs:SetPoint(o.anchor, parent, o.anchor, o.x, o.y)
+    fs:SetJustifyH(o.anchor:find("LEFT") and "LEFT" or o.anchor:find("RIGHT") and "RIGHT" or "CENTER")
+    if shadow then
+        fs:SetShadowColor(0, 0, 0, 1)
+        fs:SetShadowOffset(1, -1)
+    else
+        fs:SetShadowOffset(0, 0)
+    end
+end
+
+-- Push db.text to every font string and rebuild the cached format strings.
+-- Runs on a settings change only (ApplyAll, a Text tab control, a profile).
+TXT.Apply = function()
+    if not db or type(db.text) ~= "table" then return end
+    local t = db.text
+    local flags = t.outline
+    -- most specific wins: the item's own font, then its group's, then the global one
+    TXT.Place(energy.value, energy, t.energy, TXT.FontPath(t.energy.font or t.font), flags, t.shadow)
+    TXT.Place(regen.value, regen, t.regen, TXT.FontPath(t.regen.font or t.font), flags, t.shadow)
+    TXT.Place(swing.time, swing, t.swing, TXT.FontPath(t.swing.font or t.font), flags, t.shadow)
+    for key, btn in pairs(spellIcons) do
+        local cfg = db.spells and db.spells[key] or nil
+        TXT.Place(btn.timer, btn, t.timer,
+            TXT.FontPath((cfg and cfg.font) or t.timer.font or t.font), flags, t.shadow,
+            cfg and cfg.fontSize or nil)
+    end
+    TXT.regenFmt    = "%." .. t.regen.decimals .. "f" .. (t.regen.format == "rate" and " /s" or "")
+    TXT.swingRemain = "%." .. t.swing.decimals .. "f s"
+    TXT.swingBoth   = "%." .. t.swing.decimals .. "f / %." .. t.swing.decimals .. "f s"
+    UF.Fonts()   -- the unit frames follow the global font, outline and shadow
+    TXT.Paint()
+end
+
+-- Resource bar text.
+TXT.Energy = function(fs, cur, max)
+    local t = db and db.text
+    TXT.Value(fs, t and t.energy.format, cur, max)   -- nil before login: the original format
+end
+
+-- A current / maximum pair as text, in format f (cur_max, cur, percent,
+-- deficit, none). cur / max may be secret: they are only ever handed to the
+-- widget unless IsReadable says our own arithmetic may look at them.
+TXT.Value = function(fs, f, cur, max)
+    if f == "none" then
+        fs:SetText("")
+    elseif f == "cur" then
+        fs:SetFormattedText("%d", cur)
+    elseif (f == "percent" or f == "deficit") and IsReadable(cur) and IsReadable(max)
+        and type(cur) == "number" and type(max) == "number" then
+        if f == "percent" then
+            fs:SetFormattedText("%d%%", max > 0 and math.floor(cur / max * 100 + 0.5) or 0)
+        else
+            fs:SetFormattedText("%d", cur - max)
+        end
+    else
+        fs:SetFormattedText("%d / %d", cur, max)
+    end
+end
+
+-- Regen bar text. rate is our own measured number.
+TXT.Regen = function(fs, rate)
+    local t = db and db.text
+    if t and t.regen.format == "none" then
+        fs:SetText("")
+    else
+        fs:SetFormattedText(TXT.regenFmt or "%.1f /s", rate)
+    end
+end
+
+-- Cooldown number for the formats other than "auto" (FormatRemaining keeps
+-- the original auto behaviour). rem is a plain readable number.
+TXT.Timer = function(rem, f)
+    if f == "tenths" and rem < 10 then return string.format("%.1f", rem) end
+    local sec = math.ceil(rem)
+    if f == "seconds" then return tostring(sec) end
+    if f == "mmss" or sec >= 60 then
+        return string.format("%d:%02d", math.floor(sec / 60), sec % 60)
+    end
+    return tostring(sec)
+end
+
+-- Show db.text on the Text tab. Sliders only repaint their labels here.
+TXT.Refresh = function()
+    local ui, t = TXT.ui, db and db.text
+    if not ui or type(t) ~= "table" then return end
+    local was = suppress
+    suppress = true
+    TXT.Label(ui.font, t.font, "Font: ", t.font)
+    ui.outline:SetText("Outline: " .. TXT.Find(TXT.OUTLINES, t.outline).name)
+    ui.shadow:SetChecked(t.shadow)
+    ui.skinColor:SetChecked(t.useSkinColor)
+    ui.r:SetValue(t.r)
+    ui.g:SetValue(t.g)
+    ui.b:SetValue(t.b)
+    for i = 1, #TXT.TARGETS do
+        local info = TXT.TARGETS[i]
+        local o = t[info.key]
+        TXT.Label(ui.tfont[info.key], o.font, "Font: ", t.font)
+        ui.size[info.key]:SetValue(o.size)
+        ui.x[info.key]:SetValue(o.x)
+        ui.y[info.key]:SetValue(o.y)
+        ui.anchor[info.key]:SetText("Anchor: " .. TXT.Find(TXT.ANCHORS, o.anchor).name)
+        if ui.format[info.key] then
+            ui.format[info.key]:SetText("Format: " .. TXT.Find(info.formats, o.format).name)
+        end
+        if ui.decimals[info.key] then ui.decimals[info.key]:SetValue(o.decimals) end
+    end
+    -- Config tab: each tracked ability's own font button and number size
+    if TXT.itemFont and db.spells then
+        for key, b in pairs(TXT.itemFont) do
+            local cfg = db.spells[key]
+            if cfg then
+                TXT.Label(b, cfg.font, "Font: ", t.timer.font or t.font)
+                TXT.itemSize[key]:SetValue(cfg.fontSize or 0)
+            end
+        end
+    end
+    suppress = was
+end
+
+-- Caption of a font button, drawn in the typeface it stands for. key nil
+-- means the button inherits; inherited is the font it falls back to.
+TXT.Label = function(b, key, prefix, inherited)
+    local f = TXT.Find(TXT.FONTS, key)
+    if key and f then
+        b:SetText(prefix .. f.name)
+    elseif key then
+        b:SetText(prefix .. "(missing, using default)")
+    else
+        b:SetText(prefix .. "same as Text tab")
+    end
+    local fs = b.GetFontString and b:GetFontString()
+    if fs and fs.SetFont then
+        pcall(fs.SetFont, fs, TXT.FontPath(key or inherited), 11, "")
+        if fs.GetFont and not fs:GetFont() then fs:SetFont(STANDARD_TEXT_FONT, 11, "") end
+    end
+end
+
+-- The typeface list: one shared popup for every font button, so forty
+-- buttons cost one frame. Each row is drawn in its own typeface; the mouse
+-- wheel scrolls; a click picks and closes; clicking the button again closes.
+-- allowInherit adds a first row that clears the override (onPick(nil)).
+TXT.PICK_ROWS = 12
+TXT.OpenPicker = function(owner, current, allowInherit, onPick)
+    local p = TXT.picker
+    if not p then
+        p = CreateFrame("Frame", "FRHWFontPicker", panel, "BackdropTemplate")
+        TXT.picker = p
+        p:SetSize(230, TXT.PICK_ROWS * 18 + 24)
+        p:SetFrameStrata("DIALOG")
+        p:SetClampedToScreen(true)
+        p:EnableMouse(true)
+        p:SetBackdrop({ bgFile = WHITE, edgeFile = WHITE, edgeSize = 1,
+                        insets = { left = 1, right = 1, top = 1, bottom = 1 } })
+        p.foot = p:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        p.foot:SetPoint("BOTTOMLEFT", 6, 5)
+        p.rows = {}
+        for i = 1, TXT.PICK_ROWS do
+            local r = CreateFrame("Button", nil, p)
+            r:SetSize(222, 18)
+            r:SetPoint("TOPLEFT", 4, -4 - (i - 1) * 18)
+            r.sel = Decor(r, "BACKGROUND")
+            r.sel:SetAllPoints(true)
+            r.text = r:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            r.text:SetPoint("LEFT", 6, 0)
+            r.text:SetJustifyH("LEFT")
+            r:SetScript("OnEnter", function(self) self.sel:SetVertexColor(Col(currentSkin.accent, 0.30)); self.sel:Show() end)
+            r:SetScript("OnLeave", function(self) p.Paint(self) end)
+            r:SetScript("OnClick", function(self)
+                if not self.entry then return end
+                p:Hide()
+                p.onPick(self.entry.key)
+            end)
+            p.rows[i] = r
+        end
+        -- selected row keeps a tint; the others are clear
+        p.Paint = function(r)
+            if r.entry and r.entry.key == p.current then
+                r.sel:SetVertexColor(Col(currentSkin.accent, 0.45)); r.sel:Show()
+            else
+                r.sel:Hide()
+            end
+        end
+        p.Update = function()
+            local n = #p.list
+            local maxOff = math.max(0, n - TXT.PICK_ROWS)
+            if p.offset > maxOff then p.offset = maxOff end
+            if p.offset < 0 then p.offset = 0 end
+            for i = 1, TXT.PICK_ROWS do
+                local r, e = p.rows[i], p.list[p.offset + i]
+                r.entry = e
+                if e then
+                    r.text:SetText(e.name)
+                    if r.text.SetFont then
+                        pcall(r.text.SetFont, r.text, TXT.FontPath(e.key or p.inherited), 12, "")
+                        if r.text.GetFont and not r.text:GetFont() then r.text:SetFont(STANDARD_TEXT_FONT, 12, "") end
+                    end
+                    r.text:SetTextColor(Col(currentSkin.text, 1))
+                    p.Paint(r)
+                    r:Show()
+                else
+                    r:Hide()
+                end
+            end
+            p.foot:SetText(string.format("%d-%d of %d typefaces   (mouse wheel scrolls)",
+                math.min(n, p.offset + 1), math.min(n, p.offset + TXT.PICK_ROWS), n))
+        end
+        if p.EnableMouseWheel then
+            p:EnableMouseWheel(true)
+            p:SetScript("OnMouseWheel", function(_, delta)
+                p.offset = p.offset - delta * 3
+                p.Update()
+            end)
+        end
+        p:Hide()
+    end
+    if p:IsShown() and p.owner == owner then p:Hide(); return end
+    p.list = {}
+    if allowInherit then p.list[1] = { name = "Same as Text tab" } end   -- key nil clears the override
+    for i = 1, #TXT.FONTS do p.list[#p.list + 1] = TXT.FONTS[i] end
+    p.owner, p.current, p.onPick = owner, current, onPick
+    p.inherited = db and db.text and db.text.font or nil
+    p.offset = 0
+    for i = 1, #p.list do
+        if p.list[i].key == current then p.offset = i - math.floor(TXT.PICK_ROWS / 2) end
+    end
+    p:SetBackdropColor(Col(currentSkin.panel, 0.98))
+    p:SetBackdropBorderColor(Col(currentSkin.accent, 0.9))
+    p:ClearAllPoints()
+    p:SetPoint("TOPLEFT", owner, "BOTTOMLEFT", 0, -2)
+    p:Show()
+    p.Update()
+end
+
+-- The colour palette: one shared popup for every colour button. A grid of
+-- swatches (greys, then twelve hues at four strengths, then the class
+-- colours), and "More..." for the game's own colour wheel. onPick(r, g, b).
+TXT.OpenPalette = function(owner, r, g, b, onPick)
+    local p = TXT.palette
+    if not p then
+        p = CreateFrame("Frame", "FRHWPalette", panel, "BackdropTemplate")
+        TXT.palette = p
+        p:SetFrameStrata("DIALOG")
+        p:SetClampedToScreen(true)
+        p:EnableMouse(true)
+        p:SetBackdrop({ bgFile = WHITE, edgeFile = WHITE, edgeSize = 1,
+                        insets = { left = 1, right = 1, top = 1, bottom = 1 } })
+        local colours = {}
+        for i = 0, 11 do colours[#colours + 1] = { i / 11, i / 11, i / 11 } end
+        -- hue to r, g, b at full saturation, then lighter / darker rows
+        local function Hue(h)
+            local x = 1 - math.abs((h * 6) % 2 - 1)
+            local s = math.floor(h * 6) % 6
+            if s == 0 then return 1, x, 0 elseif s == 1 then return x, 1, 0
+            elseif s == 2 then return 0, 1, x elseif s == 3 then return 0, x, 1
+            elseif s == 4 then return x, 0, 1 end
+            return 1, 0, x
+        end
+        for _, row in ipairs({ { 0.55, 1 }, { 0, 1 }, { 0, 0.7 }, { 0, 0.4 } }) do
+            for i = 0, 11 do
+                local hr, hg, hb = Hue(i / 12)
+                local w, v = row[1], row[2]
+                colours[#colours + 1] = { (hr + (1 - hr) * w) * v, (hg + (1 - hg) * w) * v, (hb + (1 - hb) * w) * v }
+            end
+        end
+        if type(RAID_CLASS_COLORS) == "table" then
+            local n = 0
+            for _, c in pairs(RAID_CLASS_COLORS) do
+                if type(c) == "table" and c.r and n < 12 then n = n + 1; colours[#colours + 1] = { c.r, c.g, c.b } end
+            end
+        end
+        p.swatches = {}
+        for i = 1, #colours do
+            local c = colours[i]
+            local s = CreateFrame("Button", nil, p)
+            s:SetSize(16, 16)
+            s:SetPoint("TOPLEFT", 6 + ((i - 1) % 12) * 18, -6 - math.floor((i - 1) / 12) * 18)
+            s.tex = Decor(s, "ARTWORK")
+            s.tex:SetAllPoints(true)
+            s.tex:SetVertexColor(c[1], c[2], c[3], 1)
+            s.color = c
+            s:SetScript("OnClick", function(self)
+                p:Hide()
+                p.onPick(self.color[1], self.color[2], self.color[3])
+            end)
+            p.swatches[i] = s
+        end
+        local rows = math.ceil(#colours / 12)
+        p.more = MakeButton(p, "More...", 6, -(10 + rows * 18), 90, 20, function()
+            p:Hide()
+            local cp = ColorPickerFrame
+            if not cp or not cp.SetupColorPickerAndShow then return end
+            local r0, g0, b0, pick = p.r, p.g, p.b, p.onPick
+            cp:SetupColorPickerAndShow({
+                r = r0, g = g0, b = b0, hasOpacity = false,
+                swatchFunc = function() pick(cp:GetColorRGB()) end,
+                cancelFunc = function() pick(r0, g0, b0) end,
+            })
+        end)
+        p.now = Decor(p, "ARTWORK")   -- the colour being replaced
+        p.now:SetSize(40, 16)
+        p.now:SetPoint("TOPLEFT", 104, -(12 + rows * 18))
+        p:SetSize(12 * 18 + 10, rows * 18 + 40)
+        p:Hide()
+    end
+    if p:IsShown() and p.owner == owner then p:Hide(); return end
+    p.owner, p.onPick, p.r, p.g, p.b = owner, onPick, r or 1, g or 1, b or 1
+    p.now:SetVertexColor(p.r, p.g, p.b, 1)
+    p:SetBackdropColor(Col(currentSkin.panel, 0.98))
+    p:SetBackdropBorderColor(Col(currentSkin.accent, 0.9))
+    p:ClearAllPoints()
+    p:SetPoint("TOPLEFT", owner, "BOTTOMLEFT", 0, -2)
+    p:Show()
+end
+
+-- Public entry points, for macros and for the test suite.
+FRHW_TEXT = TXT
+FRHW_ApplyText = function() if db then TXT.Apply() end end
+-- Set the font by key ("friz", "arial", "lsm:<name>" ...). False if unknown.
+function FRHW_SetFont(key)
+    if not db or not TXT.Find(TXT.FONTS, key) then return false end
+    db.text.font = key
+    TXT.Apply()
+    TXT.Refresh()
+    return true
+end
+
+-- ============================ Text tab ============================
+do
+    local page = CreateFrame("Frame", nil, panel)
+    page:SetPoint("TOPLEFT", 8, -70)
+    page:SetPoint("BOTTOMRIGHT", -8, 26)
+    page:Hide()
+    AddTab("text", "FRHWTabText", "Text", page)
+    local scroll, child = MakeScroll("FRHWTextScroll", page, -4)
+    local flow = NewFlow(scroll, child)
+    local ui = { tfont = {}, size = {}, x = {}, y = {}, anchor = {}, format = {}, decimals = {} }
+    TXT.ui = ui
+
+    -- a button changed something: apply it and repaint the button labels
+    local function Changed()
+        TXT.Apply()
+        TXT.Refresh()
+    end
+
+    NoteRow(flow, "The default look of every text. Each text's own font and format are beside its bar on the HUD tab, or on the Abilities tab.")
+    ui.font = MakeButton(child, "Font", 0, 0, 190, 22, function(self)
+        TXT.OpenPicker(self, db.text.font, false, function(font) db.text.font = font; Changed() end)
+    end, "FRHWTXT_Font")
+    ui.outline = MakeButton(child, "Outline", 0, 0, 190, 22, function()
+        db.text.outline = TXT.Next(TXT.OUTLINES, db.text.outline); Changed()
+    end, "FRHWTXT_Outline")
+    ui.shadow = MakeCheck(child, "FRHWTXT_Shadow", 0, 0, "Shadow", function(self)
+        db.text.shadow = self:GetChecked() and true or false; TXT.Apply()
+    end)
+    ui.skinColor = MakeCheck(child, "FRHWTXT_SkinColor", 0, 0, "Use skin text colour", function(self)
+        db.text.useSkinColor = self:GetChecked() and true or false; TXT.Paint()
+    end)
+    ui.r = MakeSlider(child, "FRHWTXT_R", 0, 0, 190, 0, 1, 0.05, "Text red", function(v)
+        db.text.r = v; TXT.Paint()
+    end)
+    ui.g = MakeSlider(child, "FRHWTXT_G", 0, 0, 190, 0, 1, 0.05, "Text green", function(v)
+        db.text.g = v; TXT.Paint()
+    end)
+    ui.b = MakeSlider(child, "FRHWTXT_B", 0, 0, 190, 0, 1, 0.05, "Text blue", function(v)
+        db.text.b = v; TXT.Paint()
+    end)
+    Row(flow, LAYOUT.slider, ui.font, ui.outline)
+    Row(flow, LAYOUT.check, ui.shadow, ui.skinColor)
+    Row(flow, LAYOUT.slider, ui.r, ui.g)
+    -- the same colour from the palette instead of three sliders
+    ui.pal = MakeButton(child, "Pick text colour...", 0, 0, 190, 22, function(self)
+        TXT.OpenPalette(self, db.text.r, db.text.g, db.text.b, function(r, g, b)
+            db.text.r, db.text.g, db.text.b = r, g, b
+            db.text.useSkinColor = false
+            TXT.Paint(); TXT.Refresh()
+        end)
+    end, "FRHWTXT_Palette")
+    Row(flow, LAYOUT.slider, ui.b, ui.pal)
+    DividerRow(flow)
+
+    for i = 1, #TXT.TARGETS do
+        local info = TXT.TARGETS[i]
+        local key = info.key
+        -- the bar texts live in their bar's block on the HUD tab and the icon
+        -- countdown with the notifications on the Abilities tab
+        local m = ME.mark[key]
+        local flow, child = flow, child
+        if m then flow, child = m.flow, m.child end
+        ui.tfont[key] = MakeButton(child, "Font", 0, 0, 190, 22, function(self)
+            TXT.OpenPicker(self, db.text[key].font, true, function(font) db.text[key].font = font; Changed() end)
+        end, "FRHWTXT_Font_" .. key)
+        ui.size[key] = MakeSlider(child, "FRHWTXT_Size_" .. key, 0, 0, 190, 6, 40, 1, "Font size", function(v)
+            db.text[key].size = v; TXT.Apply()
+        end)
+        ui.anchor[key] = MakeButton(child, "Anchor", 0, 0, 190, 22, function()
+            db.text[key].anchor = TXT.Next(TXT.ANCHORS, db.text[key].anchor); Changed()
+        end, "FRHWTXT_Anchor_" .. key)
+        ui.x[key] = MakeSlider(child, "FRHWTXT_X_" .. key, 0, 0, 190, -200, 200, 1, "Offset X", function(v)
+            db.text[key].x = v; TXT.Apply()
+        end)
+        ui.y[key] = MakeSlider(child, "FRHWTXT_Y_" .. key, 0, 0, 190, -200, 200, 1, "Offset Y", function(v)
+            db.text[key].y = v; TXT.Apply()
+        end)
+        if info.formats then
+            ui.format[key] = MakeButton(child, "Format", 0, 0, 190, 22, function()
+                db.text[key].format = TXT.Next(info.formats, db.text[key].format); Changed()
+            end, "FRHWTXT_Format_" .. key)
+        end
+        if info.decimals then
+            ui.decimals[key] = MakeSlider(child, "FRHWTXT_Dec_" .. key, 0, 0, 190, 0, 2, 1, "Decimals", function(v)
+                db.text[key].decimals = v; TXT.Apply()
+            end)
+        end
+        local function Rows()
+            if not m then HeaderRow(flow, info.label) end
+            -- look first (typeface, size), then where it sits, then what it says
+            Row(flow, LAYOUT.slider, ui.tfont[key], ui.size[key])
+            Row(flow, LAYOUT.slider, ui.x[key], ui.y[key])
+            Row(flow, LAYOUT.slider, ui.anchor[key], ui.format[key] or ui.decimals[key])
+            if ui.format[key] and ui.decimals[key] then
+                Row(flow, LAYOUT.slider, ui.decimals[key])
+            end
+            if not m then DividerRow(flow) end
+        end
+        if m then ME.InsertRows(key, Rows) else Rows() end
+    end
+    ReflowAll(true)
+end
+
+-----------------------------------------------------------------------
+-- Option schemas (shared by the Frames and Map tabs)
+--
+-- A tab's options are one list of rows. Each row is
+--   { t = "header", l = "Title" }                               a section
+--   { k = key, t = "check",  l = label, d = default }
+--   { k = key, t = "slider", l = label, d = default, min =, max =, step = }
+--   { k = key, t = "cycle",  l = label, d = default, list = { {key=,name=} } }
+--   { k = key, t = "font",   l = label }                        nil = inherit
+--   { k = key, t = "color",  l = label, keys = {kr,kg,kb}, d = {r,g,b} }
+--     (k is the first of the three keys; the button opens the palette)
+-- du = { unitKey = value } overrides d for one unit; only = { unitKey = true }
+-- greys the control out for the others. From that one list come the
+-- defaults, the validation, the widgets and the refresh, so a new option is
+-- one row here plus the line of code that uses it.
+-----------------------------------------------------------------------
+-- A validated settings table for one schema. s may be nil (gives defaults).
+TXT.ClampOptions = function(opts, s, unitKey)
+    local out = {}
+    if type(s) ~= "table" then s = {} end
+    for i = 1, #opts do
+        local o = opts[i]
+        if o.k then
+            local d = o.d
+            if o.du and o.du[unitKey] ~= nil then d = o.du[unitKey] end
+            local v = s[o.k]
+            if o.t == "check" then
+                if type(v) ~= "boolean" then v = d end
+                out[o.k] = v == true
+            elseif o.t == "slider" then
+                v = Num(v, o.min, o.max, d)
+                if o.step >= 1 then v = math.floor(v + 0.5) end
+                out[o.k] = v
+            elseif o.t == "cycle" then
+                out[o.k] = TXT.Find(o.list, v) and v or d
+            elseif o.t == "color" then
+                -- three numbers under three keys (o.keys), so old saved values still load
+                for c = 1, 3 do out[o.keys[c]] = Num(s[o.keys[c]], 0, 1, o.d[c]) end
+            else
+                out[o.k] = type(v) == "string" and v or nil
+            end
+        end
+    end
+    return out
+end
+
+-- Build the widgets for a schema, two to a row under their section headers.
+-- cur() returns the table being edited; changed(o, isSlider) applies it.
+TXT.BuildOptions = function(flow, child, prefix, opts, cur, changed)
+    local ws, pending = {}, nil
+    for i = 1, #opts do
+        local o = opts[i]
+        if o.t == "header" then
+            if pending then Row(flow, LAYOUT.slider, pending); pending = nil end
+            HeaderRow(flow, o.l)
+        elseif o.mouse then
+            -- set with the mouse on the frame itself: saved and validated, no control
+        else
+            local w
+            if o.t == "check" then
+                w = MakeCheck(child, prefix .. o.k, 0, 0, o.l, function(self)
+                    cur()[o.k] = self:GetChecked() and true or false; changed(o)
+                end)
+            elseif o.t == "slider" then
+                w = MakeSlider(child, prefix .. o.k, 0, 0, 190, o.min, o.max, o.step, o.l, function(v)
+                    cur()[o.k] = v; changed(o, true)
+                end)
+            elseif o.t == "cycle" then
+                w = MakeButton(child, o.l, 0, 0, 190, 22, function()
+                    cur()[o.k] = TXT.Next(o.list, cur()[o.k]); changed(o)
+                end, prefix .. o.k)
+            elseif o.t == "color" then
+                -- a button with a swatch of the current colour; opens the palette
+                w = MakeButton(child, o.l, 0, 0, 190, 22, function(self)
+                    local t = cur()
+                    TXT.OpenPalette(self, t[o.keys[1]], t[o.keys[2]], t[o.keys[3]], function(r, g, b)
+                        local now = cur()
+                        now[o.keys[1]], now[o.keys[2]], now[o.keys[3]] = r, g, b
+                        changed(o)
+                    end)
+                end, prefix .. o.k)
+                w.swatch = Decor(w, "OVERLAY")
+                w.swatch:SetSize(14, 14)
+                w.swatch:SetPoint("RIGHT", -6, 0)
+            else
+                w = MakeButton(child, o.l, 0, 0, 190, 22, function(self)
+                    TXT.OpenPicker(self, cur()[o.k], true, function(font)
+                        cur()[o.k] = font; changed(o)
+                    end)
+                end, prefix .. o.k)
+            end
+            ws[o.k] = w
+            if pending then
+                Row(flow, LAYOUT.slider, pending, w); pending = nil
+            else
+                pending = w
+            end
+        end
+    end
+    if pending then Row(flow, LAYOUT.slider, pending) end
+    return ws
+end
+
+-- Show a settings table on its widgets. Call with suppress set.
+TXT.ShowOptions = function(ws, opts, t, unitKey, inheritedFont)
+    for i = 1, #opts do
+        local o = opts[i]
+        local w = o.k and ws[o.k]
+        if w then
+            local v = t[o.k]
+            if o.t == "check" then
+                w:SetChecked(v)
+            elseif o.t == "slider" then
+                w:SetValue(v)
+            elseif o.t == "cycle" then
+                w:SetText(o.l .. ": " .. TXT.Find(o.list, v).name)
+            elseif o.t == "color" then
+                w.swatch:SetVertexColor(t[o.keys[1]], t[o.keys[2]], t[o.keys[3]], 1)
+            else
+                TXT.Label(w, v, o.l .. ": ", inheritedFont)
+            end
+            local on = not o.only or o.only[unitKey] == true
+            w:SetAlpha(on and 1 or 0.35)
+            if w.EnableMouse then w:EnableMouse(on) end
+        end
+    end
+end
+
+-- Run fn once combat has ended (now, if not in combat). key keeps one
+-- pending call per job however often it is asked for.
+TXT.AfterCombat = function(key, fn)
+    if not (InCombatLockdown and InCombatLockdown()) then fn(); return end
+    if not TXT.waiter then
+        TXT.waiting = {}
+        TXT.waiter = CreateFrame("Frame")
+        TXT.waiter:SetScript("OnEvent", function(self)
+            self:UnregisterEvent("PLAYER_REGEN_ENABLED")
+            local jobs = TXT.waiting
+            TXT.waiting = {}
+            for _, job in pairs(jobs) do job() end
+        end)
+    end
+    TXT.waiting[key] = fn
+    TXT.waiter:RegisterEvent("PLAYER_REGEN_ENABLED")
+end
+
+-- Move a game frame under a hidden parent, or give it back. Reversible, so
+-- an option can be switched off again without a reload (ElvUI's hide, minus
+-- the part that cannot be undone).
+TXT.Stash = function(frame, hide)
+    if type(frame) ~= "table" or not frame.SetParent or not frame.GetParent then return end
+    TXT.stashed = TXT.stashed or {}
+    if hide and not TXT.stashed[frame] then
+        if not TXT.hidden then
+            TXT.hidden = CreateFrame("Frame")
+            TXT.hidden:Hide()
+        end
+        TXT.stashed[frame] = frame:GetParent() or UIParent
+        frame:SetParent(TXT.hidden)
+        TXT.hooked = TXT.hooked or {}
+        if hooksecurefunc and not TXT.hooked[frame] then
+            TXT.hooked[frame] = true
+            -- the game can re-parent its own frame; put it back under ours
+            hooksecurefunc(frame, "SetParent", function(self, parent)
+                if TXT.stashed[self] and parent ~= TXT.hidden and not (InCombatLockdown and InCombatLockdown()) then
+                    self:SetParent(TXT.hidden)
+                end
+            end)
+        end
+    elseif not hide and TXT.stashed[frame] then
+        local parent = TXT.stashed[frame]
+        TXT.stashed[frame] = nil
+        frame:SetParent(parent)
+    end
+end
+
+-----------------------------------------------------------------------
+-- Unit frames (the "2" build): player, target, target of target
+--
+-- The ElvUI look -- flat bars in a 1 px border, class / reaction colours,
+-- portrait, name and health texts -- painted with this HUD's own skins,
+-- without ElvUI's machinery. What keeps it cheap:
+--   * a frame is only built the first time it is switched on; a frame that
+--     is off has no frame, no events and no code running;
+--   * updates are event driven. Only target of target is polled (5 times a
+--     second, and only while it is on screen) because the client sends no
+--     events for that unit;
+--   * settings work happens in UF.Apply, never in an update.
+-- The frames are secure unit buttons (left click targets, right click opens
+-- the unit menu), so the client forbids moving, sizing, showing or hiding
+-- them in combat: UF.Apply waits for combat to end. Colours, texts, bar
+-- values, icons and opacity are not restricted and update in combat.
+--
+-- To add an option: one row in UF.OPTS, then use db.frames[key].<k> in
+-- UF.Apply / UF.Layout / UF.Fonts or in the update that needs it.
+-----------------------------------------------------------------------
+UF.UNITS = {
+    { key = "player",       unit = "player",       label = "Player",           blizz = "PlayerFrame" },
+    { key = "target",       unit = "target",       label = "Target",           blizz = "TargetFrame" },
+    { key = "targettarget", unit = "targettarget", label = "Target of target", blizz = "TargetFrameToT" },
+    { key = "party1", unit = "party1", label = "Party 1", blizz = "PartyMemberFrame1" },
+    { key = "party2", unit = "party2", label = "Party 2", blizz = "PartyMemberFrame2" },
+    { key = "party3", unit = "party3", label = "Party 3", blizz = "PartyMemberFrame3" },
+    { key = "party4", unit = "party4", label = "Party 4", blizz = "PartyMemberFrame4" },
+}
+UF.COLORS = {
+    { key = "class",  name = "Class / reaction" },
+    { key = "skin",   name = "Skin bar colour" },
+    { key = "custom", name = "Custom (sliders)" },
+}
+UF.HEALTH = {
+    { key = "cur_max", name = "Current / max" },
+    { key = "percent", name = "Percent" },
+    { key = "cur",     name = "Current" },
+    { key = "deficit", name = "Deficit" },
+    { key = "none",    name = "Hidden" },
+}
+UF.STRATA = {
+    { key = "BACKGROUND", name = "Background" },
+    { key = "LOW",        name = "Low" },
+    { key = "MEDIUM",     name = "Medium" },
+    { key = "HIGH",       name = "High" },
+}
+UF.TEX = {
+    { key = "flat",     name = "Flat",     path = WHITE },
+    { key = "blizzard", name = "Blizzard", path = "Interface\\TARGETINGFRAME\\UI-StatusBar" },
+    { key = "raid",     name = "Raid",     path = "Interface\\RaidFrame\\Raid-Bar-Hp-Fill" },
+}
+UF.NAMEFMT = {
+    { key = "name",       name = "Name" },
+    { key = "level_name", name = "Level Name" },
+    { key = "name_level", name = "Name (Level)" },
+}
+UF.NAMECOL = {
+    { key = "text",  name = "Text colour" },
+    { key = "class", name = "Class / reaction" },
+}
+UF.PORT = {
+    { key = "2d", name = "2D picture" },
+    { key = "3d", name = "3D model" },
+}
+UF.SIDE = {
+    { key = "left",  name = "Left" },
+    { key = "right", name = "Right" },
+}
+UF.VPOS = {
+    { key = "above", name = "Above the frame" },
+    { key = "below", name = "Below the frame" },
+}
+UF.ABTYPE = {
+    { key = "buffs",   name = "Buffs" },
+    { key = "debuffs", name = "Debuffs" },
+}
+UF.CUSTOM = {
+    { key = "none",  name = "None" },
+    { key = "level", name = "Level" },
+    { key = "class", name = "Class / creature type" },
+    { key = "hcur",  name = "Health" },
+    { key = "hpp",   name = "Health %" },
+    { key = "pow",   name = "Power" },
+    { key = "powp",  name = "Power %" },
+}
+UF.PLAYER = { player = true }
+UF.NOTTOT = { player = true, target = true }
+
+-- Every per-frame option, in the order and groups ElvUI lists them.
+UF.OPTS = {
+    { t = "header", l = "General" },
+    { k = "enabled",      t = "check",  l = "Enable this frame", d = false },
+    { k = "hideBlizzard", t = "check",  l = "Hide the game's own frame", d = true },
+    { k = "x",     t = "slider", mouse = true, l = "X (from screen centre)", d = 0, du = { player = -290, target = 290, party1 = -560, party2 = -560, party3 = -560, party4 = -560 }, min = -1200, max = 1200, step = 1 },
+    { k = "y",     t = "slider", mouse = true, l = "Y (from screen centre)", d = -190, du = { targettarget = -240, party1 = -120, party2 = -72, party3 = -24, party4 = 24 }, min = -700, max = 700, step = 1 },
+    { k = "w",     t = "slider", l = "Width",  d = 230, du = { targettarget = 130, party1 = 150, party2 = 150, party3 = 150, party4 = 150 }, min = 40, max = 600, step = 1 },
+    { k = "h",     t = "slider", l = "Height", d = 34,  du = { targettarget = 24, party1 = 28, party2 = 28, party3 = 28, party4 = 28 },  min = 10, max = 200, step = 1 },
+    { k = "scale", t = "slider", mouse = true, l = "Scale",   d = 1, min = 0.5, max = 3, step = 0.05 },
+    { k = "alpha", t = "slider", l = "Opacity", d = 1, min = 0.1, max = 1, step = 0.05 },
+    { k = "strata",  t = "cycle",  l = "Strata", d = "LOW", list = UF.STRATA },
+    { k = "level",   t = "slider", l = "Frame level", d = 5, min = 1, max = 50, step = 1 },
+    { k = "texture", t = "cycle",  l = "Bar texture", d = "flat", list = UF.TEX },
+    { k = "smooth",  t = "check",  l = "Smooth bars", d = true },
+    { k = "hover",   t = "check",  l = "Mouseover highlight", d = true },
+    { k = "threat",  t = "check",  l = "Threat border", d = true, du = { targettarget = false }, only = UF.NOTTOT },
+
+    { t = "header", l = "Fader" },
+    { k = "fade",       t = "check",  l = "Fade when idle", d = false },
+    { k = "fadeAlpha",  t = "slider", l = "Idle opacity", d = 0.35, min = 0, max = 1, step = 0.05 },
+    { k = "fadeCombat", t = "check",  l = "Full in combat", d = true },
+    { k = "fadeTarget", t = "check",  l = "Full with a target", d = true },
+    { k = "fadeHover",  t = "check",  l = "Full on mouseover", d = true },
+
+    { t = "header", l = "Health" },
+    { k = "color",    t = "cycle",  l = "Colour", d = "class", list = UF.COLORS },
+    { k = "bgAlpha",  t = "slider", l = "Background opacity", d = 0.9, min = 0, max = 1, step = 0.05 },
+    { k = "hr",       t = "color",  l = "Custom colour", keys = { "hr", "hg", "hb" }, d = { 0.2, 0.6, 0.2 } },
+    { k = "hReverse", t = "check",  l = "Reverse fill", d = false },
+    { k = "hpred",    t = "check",  l = "Show incoming heals", d = true },
+    { k = "cutaway",  t = "check",  l = "Cutaway (health just lost)", d = false },
+    { k = "health",   t = "cycle",  l = "Text", d = "cur_max", du = { targettarget = "percent" }, list = UF.HEALTH },
+    { k = "hAnchor",  t = "cycle",  l = "Text position", d = "RIGHT", list = TXT.ANCHORS },
+    { k = "hX",       t = "slider", l = "Text offset X", d = 0, min = -200, max = 200, step = 1 },
+    { k = "hY",       t = "slider", l = "Text offset Y", d = 0, min = -100, max = 100, step = 1 },
+
+    { t = "header", l = "Power" },
+    { k = "powerH",    t = "slider", l = "Bar height (0 = none)", d = 8, du = { targettarget = 4 }, min = 0, max = 40, step = 1 },
+    { k = "pReverse",  t = "check",  l = "Reverse fill", d = false },
+    { k = "pAuto",     t = "check",  l = "Hide when the unit has none", d = true },
+    { k = "pHideNPC",  t = "check",  l = "Hide on NPCs", d = false },
+    { k = "powerText", t = "check",  l = "Show number", d = false },
+    { k = "pAnchor",   t = "cycle",  l = "Number position", d = "CENTER", list = TXT.ANCHORS },
+    { k = "pX",        t = "slider", l = "Number offset X", d = 0, min = -200, max = 200, step = 1 },
+    { k = "pY",        t = "slider", l = "Number offset Y", d = 0, min = -100, max = 100, step = 1 },
+
+    { t = "header", l = "Name" },
+    { k = "name",       t = "check",  l = "Show name", d = true },
+    { k = "nameFormat", t = "cycle",  l = "Format", d = "name", list = UF.NAMEFMT },
+    { k = "nameColor",  t = "cycle",  l = "Colour", d = "text", list = UF.NAMECOL },
+    { k = "nAnchor",    t = "cycle",  l = "Position", d = "LEFT", list = TXT.ANCHORS },
+    { k = "nX",         t = "slider", l = "Offset X", d = 0, min = -200, max = 200, step = 1 },
+    { k = "nY",         t = "slider", l = "Offset Y", d = 0, min = -100, max = 100, step = 1 },
+
+    { t = "header", l = "Text font" },
+    { k = "font",     t = "font",   l = "Font" },
+    { k = "fontSize", t = "slider", l = "Font size", d = 11, du = { targettarget = 10 }, min = 6, max = 40, step = 1 },
+
+    { t = "header", l = "Portrait" },
+    { k = "portrait",  t = "check",  l = "Show portrait", d = false },
+    { k = "portStyle", t = "cycle",  l = "Style", d = "2d", list = UF.PORT },
+    { k = "portSide",  t = "cycle",  l = "Side", d = "left", du = { target = "right" }, list = UF.SIDE },
+    { k = "portW",     t = "slider", l = "Width (0 = square)", d = 0, min = 0, max = 200, step = 1 },
+
+    { t = "header", l = "Cast bar" },
+    { k = "cb",          t = "check",  l = "Show cast bar", d = true, du = { targettarget = false }, only = UF.NOTTOT },
+    { k = "cbHideBlizz", t = "check",  l = "Hide the game's cast bar", d = true, only = UF.PLAYER },
+    { k = "cbW",    t = "slider", l = "Width (0 = frame width)", d = 0, min = 0, max = 600, step = 1, only = UF.NOTTOT },
+    { k = "cbH",    t = "slider", l = "Height", d = 14, min = 6, max = 40, step = 1, only = UF.NOTTOT },
+    { k = "cbPos",  t = "cycle",  l = "Position", d = "below", list = UF.VPOS, only = UF.NOTTOT },
+    { k = "cbr",    t = "color",  l = "Bar colour", keys = { "cbr", "cbg", "cbb" }, d = { 1, 0.7, 0 }, only = UF.NOTTOT },
+    { k = "cbIcon", t = "check",  l = "Spell icon", d = true, only = UF.NOTTOT },
+    { k = "cbTime", t = "check",  l = "Time left", d = true, only = UF.NOTTOT },
+
+    { t = "header", l = "Buffs" },
+    { k = "bOn",   t = "check",  l = "Show buffs", d = false, du = { target = true } },
+    { k = "bMine", t = "check",  l = "Only mine", d = false },
+    { k = "bMax",  t = "slider", l = "How many", d = 8, min = 1, max = 24, step = 1 },
+    { k = "bSize", t = "slider", l = "Icon size", d = 20, min = 12, max = 48, step = 1 },
+    { k = "bPos",  t = "cycle",  l = "Position", d = "above", list = UF.VPOS },
+
+    { t = "header", l = "Debuffs" },
+    { k = "dOn",   t = "check",  l = "Show debuffs", d = true, du = { targettarget = false } },
+    { k = "dMine", t = "check",  l = "Only mine", d = false },
+    { k = "dMax",  t = "slider", l = "How many", d = 8, min = 1, max = 24, step = 1 },
+    { k = "dSize", t = "slider", l = "Icon size", d = 20, min = 12, max = 48, step = 1 },
+    { k = "dPos",  t = "cycle",  l = "Position", d = "above", list = UF.VPOS },
+
+    { t = "header", l = "Aura bars" },
+    { k = "abOn",   t = "check",  l = "Show aura bars", d = false },
+    { k = "abMine", t = "check",  l = "Only mine", d = true },
+    { k = "abType", t = "cycle",  l = "Show", d = "buffs", du = { target = "debuffs" }, list = UF.ABTYPE },
+    { k = "abMax",  t = "slider", l = "How many", d = 5, min = 1, max = 10, step = 1 },
+    { k = "abH",    t = "slider", l = "Bar height", d = 14, min = 8, max = 30, step = 1 },
+
+    { t = "header", l = "Info panel" },
+    { k = "info",  t = "check",  l = "Name and health on a strip below", d = false },
+    { k = "infoH", t = "slider", l = "Strip height", d = 14, min = 10, max = 40, step = 1 },
+
+    { t = "header", l = "Custom texts" },
+    { k = "c1",       t = "cycle",  l = "Text 1", d = "none", list = UF.CUSTOM },
+    { k = "c1Anchor", t = "cycle",  l = "Text 1 position", d = "CENTER", list = TXT.ANCHORS },
+    { k = "c1X",      t = "slider", l = "Text 1 offset X", d = 0, min = -200, max = 200, step = 1 },
+    { k = "c1Y",      t = "slider", l = "Text 1 offset Y", d = 0, min = -100, max = 100, step = 1 },
+    { k = "c2",       t = "cycle",  l = "Text 2", d = "none", list = UF.CUSTOM },
+    { k = "c2Anchor", t = "cycle",  l = "Text 2 position", d = "BOTTOM", list = TXT.ANCHORS },
+    { k = "c2X",      t = "slider", l = "Text 2 offset X", d = 0, min = -200, max = 200, step = 1 },
+    { k = "c2Y",      t = "slider", l = "Text 2 offset Y", d = 0, min = -100, max = 100, step = 1 },
+
+    { t = "header", l = "Class bar" },
+    { k = "classbar", t = "check",  l = "Combo points on the frame", d = false, only = UF.PLAYER },
+    { k = "cpH",      t = "slider", l = "Height", d = 6, min = 3, max = 20, step = 1, only = UF.PLAYER },
+
+    { t = "header", l = "Colours" },
+    { k = "bgr", t = "color", l = "Frame background", keys = { "bgr", "bgg", "bgb" }, d = { 0, 0, 0 } },
+
+    { t = "header", l = "Icons" },
+    { k = "leaderIcon", t = "check", l = "Group leader icon", d = true },
+    { k = "pvpIcon",    t = "check", l = "PvP icon", d = false },
+    { k = "rezIcon",    t = "check", l = "Incoming resurrection icon", d = true },
+    { k = "phaseIcon",  t = "check", l = "Out-of-phase icon", d = true, only = { target = true, targettarget = true } },
+    { k = "raidIcon",   t = "check",  l = "Raid target icon", d = true },
+    { k = "iconSize",   t = "slider", l = "Icon size", d = 18, min = 8, max = 48, step = 1 },
+    { k = "restIcon",   t = "check",  l = "Resting icon", d = true, only = UF.PLAYER },
+    { k = "combatIcon", t = "check",  l = "Combat icon", d = true, only = UF.PLAYER },
+}
+
+UF.EVENTS = { "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_POWER_UPDATE", "UNIT_MAXPOWER",
+              "UNIT_DISPLAYPOWER", "UNIT_NAME_UPDATE", "UNIT_FACTION", "UNIT_LEVEL",
+              "UNIT_PORTRAIT_UPDATE", "UNIT_MODEL_CHANGED", "UNIT_THREAT_SITUATION_UPDATE",
+              "UNIT_AURA", "UNIT_HEAL_PREDICTION", "UNIT_PHASE",
+              "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_CHANNEL_START", "UNIT_SPELLCAST_STOP",
+              "UNIT_SPELLCAST_CHANNEL_STOP", "UNIT_SPELLCAST_DELAYED", "UNIT_SPELLCAST_CHANNEL_UPDATE",
+              "UNIT_SPELLCAST_FAILED", "UNIT_SPELLCAST_INTERRUPTED", "UNIT_SPELLCAST_INTERRUPTIBLE",
+              "UNIT_SPELLCAST_NOT_INTERRUPTIBLE", "UNIT_SPELLCAST_SUCCEEDED" }
+UF.PLAIN = { "PLAYER_TARGET_CHANGED", "PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISABLED",
+             "RAID_TARGET_UPDATE", "PLAYER_UPDATE_RESTING",
+             "PARTY_LEADER_CHANGED", "GROUP_ROSTER_UPDATE", "INCOMING_RESURRECT_CHANGED" }
+UF.frames = {}        -- key -> frame, filled as frames are switched on
+UF.sel = "player"     -- the unit the Frames tab is editing
+
+-- Defaults come from the schema, so Reset to default and a fresh install
+-- need no second list.
+DEFAULTS.frames = {}
+for i = 1, #UF.UNITS do
+    DEFAULTS.frames[UF.UNITS[i].key] = TXT.ClampOptions(UF.OPTS, nil, UF.UNITS[i].key)
+end
+
+-- Fill and validate db.frames from SavedVariables or a profile.
+UF.Clamp = function(src)
+    local out = {}
+    for i = 1, #UF.UNITS do
+        local key = UF.UNITS[i].key
+        out[key] = TXT.ClampOptions(UF.OPTS, type(src) == "table" and src[key] or nil, key)
+    end
+    db.frames = out
+end
+
+-- True while the client forbids changing a secure frame.
+UF.Locked = function()
+    return InCombatLockdown ~= nil and InCombatLockdown() and true or false
+end
+
+-- Class colour for a player, reaction colour for anything else, or nil when
+-- the client will not let us read which it is.
+UF.UnitColor = function(u)
+    if not UnitIsPlayer then return nil end
+    local ok, isPlayer = pcall(UnitIsPlayer, u)
+    if not ok or not IsReadable(isPlayer) then return nil end
+    local c
+    if isPlayer then
+        local ok2, _, class = pcall(UnitClass, u)
+        c = ok2 and IsReadable(class) and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
+    elseif UnitReaction then
+        local ok2, reaction = pcall(UnitReaction, u, "player")
+        c = ok2 and IsReadable(reaction) and FACTION_BAR_COLORS and FACTION_BAR_COLORS[reaction]
+    end
+    if c then return c.r, c.g, c.b end
+    return nil
+end
+
+-- Health bar and health text. Secret values only ever reach the widgets.
+UF.Health = function(f)
+    local cfg = db.frames[f.info.key]
+    local cur, max = UnitHealth(f.unit), UnitHealthMax(f.unit)
+    f.health:SetMinMaxValues(0, max)
+    if cfg.smooth and UF.interp then f.health:SetValue(cur, UF.interp) else f.health:SetValue(cur) end
+    TXT.Value(f.hp, cfg.health, cur, max)
+    -- cutaway: the layer behind the bar keeps the previous value for a moment,
+    -- so the health just lost stays visible. The values are only stored and
+    -- handed back to a widget, never compared, so secret ones are fine.
+    f.back:SetMinMaxValues(0, max)
+    if cfg.cutaway and C_Timer and C_Timer.After then
+        if f.hasHp and not f.cutBusy then
+            f.cutBusy = true
+            f.back:SetValue(f.lastHp)
+            C_Timer.After(0.4, function()
+                f.cutBusy = false
+                f.back:SetValue(f.lastHp)
+            end)
+        end
+    else
+        f.back:SetValue(0)
+    end
+    f.lastHp, f.hasHp = cur, true
+    UF.Custom(f)
+end
+
+-- Power bar and, if wanted, the power number. The bar folds away when the
+-- unit has no power or is an NPC (if those options are on).
+UF.Power = function(f)
+    local cfg = db.frames[f.info.key]
+    local show = cfg.powerH > 0
+    local cur, max = UnitPower(f.unit), UnitPowerMax(f.unit)
+    if show and cfg.pAuto and IsReadable(max) and type(max) == "number" and max <= 0 then show = false end
+    if show and cfg.pHideNPC and UnitIsPlayer then
+        local ok, isPlayer = pcall(UnitIsPlayer, f.unit)
+        if ok and IsReadable(isPlayer) and not isPlayer then show = false end
+    end
+    if (not show) ~= (f.noPower == true) then
+        f.noPower = not show
+        UF.Layout(f, cfg)
+    end
+    if not show then return end
+    f.power:SetMinMaxValues(0, max)
+    if cfg.smooth and UF.interp then f.power:SetValue(cur, UF.interp) else f.power:SetValue(cur) end
+    if cfg.powerText then f.pp:SetFormattedText("%d", cur) else f.pp:SetText("") end
+    UF.Custom(f)
+    if f.cp then UF.Combo(f) end
+end
+
+-- Bar colours. Anything the client will not let us read falls back to the
+-- skin, so this cannot error on a secret value.
+UF.Tint = function(f)
+    local cfg = db.frames[f.info.key]
+    local r, g, b = Col(currentSkin.bar)
+    if cfg.color == "custom" then
+        r, g, b = cfg.hr, cfg.hg, cfg.hb
+    elseif cfg.color == "class" then
+        local cr, cg, cb = UF.UnitColor(f.unit)
+        if cr then r, g, b = cr, cg, cb end
+    end
+    f.health:SetStatusBarColor(r, g, b, 1)
+    f.health.bg:SetVertexColor(r * 0.25, g * 0.25, b * 0.25, cfg.bgAlpha)
+    r, g, b = Col(currentSkin.accent)
+    if UnitPowerType and PowerBarColor then
+        local ok, ptype, token = pcall(UnitPowerType, f.unit)
+        local c = ok and ((IsReadable(token) and PowerBarColor[token]) or (IsReadable(ptype) and PowerBarColor[ptype]))
+        if c and c.r then r, g, b = c.r, c.g, c.b end
+    end
+    f.power:SetStatusBarColor(r, g, b, 1)
+    f.power.bg:SetVertexColor(r * 0.25, g * 0.25, b * 0.25, cfg.bgAlpha)
+end
+
+-- Name text: with or without the level, in the text colour or the unit's.
+UF.Name = function(f)
+    local cfg = db.frames[f.info.key]
+    if not cfg.name then f.name:SetText(""); return end
+    local n = UnitName(f.unit)
+    local done = false
+    if cfg.nameFormat ~= "name" and UnitLevel then
+        local ok, lvl = pcall(UnitLevel, f.unit)
+        if ok and IsReadable(lvl) and type(lvl) == "number" then
+            local ls = lvl > 0 and tostring(lvl) or "??"
+            if cfg.nameFormat == "level_name" then
+                done = pcall(f.name.SetFormattedText, f.name, "%s %s", ls, n)
+            else
+                done = pcall(f.name.SetFormattedText, f.name, "%s (%s)", n, ls)
+            end
+        end
+    end
+    if not done then f.name:SetText(n) end
+    local r, g, b
+    if cfg.nameColor == "class" then r, g, b = UF.UnitColor(f.unit) end
+    if r then f.name:SetTextColor(r, g, b, 1) else f.name:SetTextColor(TXT.Color()) end
+end
+
+-- Portrait: the unit's 2D picture or its 3D model.
+UF.Portrait = function(f)
+    local cfg = db.frames[f.info.key]
+    local exists = UnitExists(f.unit)
+    if not cfg.portrait then
+        f.port:Hide()
+        if f.model then f.model:Hide() end
+        return
+    end
+    if cfg.portStyle == "3d" then
+        if not f.model then
+            f.model = CreateFrame("PlayerModel", nil, f)
+            f.model:SetAllPoints(f.portBg)
+        end
+        f.port:Hide()
+        f.model:SetShown(exists and true or false)
+        if exists then
+            pcall(f.model.SetUnit, f.model, f.unit)
+            if f.model.SetPortraitZoom then f.model:SetPortraitZoom(1) end
+        end
+    else
+        if f.model then f.model:Hide() end
+        f.port:SetShown(exists and true or false)
+        if exists and SetPortraitTexture then pcall(SetPortraitTexture, f.port, f.unit) end
+    end
+end
+
+-- Raid target icon on any frame; resting and combat icons on the player's.
+UF.Icons = function(f)
+    local cfg = db.frames[f.info.key]
+    local shown = false
+    if cfg.raidIcon and GetRaidTargetIndex and SetRaidTargetIconTexture then
+        local ok, idx = pcall(GetRaidTargetIndex, f.unit)
+        if ok and IsReadable(idx) and type(idx) == "number" then
+            SetRaidTargetIconTexture(f.raid, idx)
+            shown = true
+        end
+    end
+    f.raid:SetShown(shown)
+    if f.info.key == "player" then
+        f.rest:SetShown(cfg.restIcon and IsResting ~= nil and IsResting() and true or false)
+        f.combat:SetShown(cfg.combatIcon and UnitAffectingCombat("player") and true or false)
+    end
+end
+
+-- Border colour from threat: yellow, orange, red; the skin's border otherwise.
+UF.Threat = function(f)
+    local cfg = db.frames[f.info.key]
+    local r, g, b, a = Col(currentSkin.border)
+    if cfg.threat and UnitThreatSituation and f.info.key ~= "targettarget" then
+        local ok, st
+        if f.info.key == "target" then
+            ok, st = pcall(UnitThreatSituation, "player", "target")
+        else
+            ok, st = pcall(UnitThreatSituation, "player")
+        end
+        if ok and IsReadable(st) and type(st) == "number" and st > 0 then
+            if st >= 3 then r, g, b, a = 1, 0, 0, 1
+            elseif st == 2 then r, g, b, a = 1, 0.6, 0, 1
+            else r, g, b, a = 1, 1, 0.47, 1 end
+        end
+    end
+    f:SetBackdropBorderColor(r, g, b, a)
+end
+
+-- Opacity: the frame's own, or the idle value while nothing keeps it awake.
+-- SetAlpha is not a protected call, so this runs in combat.
+UF.Fade = function(f)
+    local cfg = db.frames[f.info.key]
+    local a = cfg.alpha
+    if cfg.fade and not EditMode() then
+        local awake = (cfg.fadeCombat and UnitAffectingCombat("player"))
+            or (cfg.fadeTarget and UnitExists("target"))
+            or (cfg.fadeHover and f.hovering)
+        if not awake then a = cfg.alpha * cfg.fadeAlpha end
+    end
+    f:SetAlpha(a)
+end
+
+-- What a poll or a plain refresh needs: no portrait work.
+UF.Light = function(f)
+    UF.Name(f)
+    UF.Tint(f)
+    UF.Health(f)
+    UF.Power(f)
+    UF.Icons(f)
+end
+
+-- Everything about the unit. With no such unit (the options window is open
+-- and nothing is targeted) the frame shows its own label so it can still be
+-- seen, sized and dragged.
+UF.Update = function(f)
+    if not db or not db.frames then return end
+    local cfg = db.frames[f.info.key]
+    local exists = UnitExists(f.unit)
+    if not f.secure and f.info.key ~= "player" and not EditMode() then
+        f:SetShown(exists and true or false)   -- no unit watch without the secure template
+    end
+    UF.Fade(f)
+    if not exists then
+        if f.noPower then f.noPower = false; UF.Layout(f, cfg) end
+        f.name:SetText(cfg.name and f.info.label or "")
+        f.name:SetTextColor(TXT.Color())
+        f.hp:SetText("")
+        f.pp:SetText("")
+        f.health:SetMinMaxValues(0, 1); f.health:SetValue(1)
+        f.power:SetMinMaxValues(0, 1); f.power:SetValue(1)
+        f.health:SetStatusBarColor(Col(currentSkin.bar, 1))
+        f.power:SetStatusBarColor(Col(currentSkin.accent, 1))
+        f.raid:Hide()
+        UF.Portrait(f)
+        UF.Clear(f)
+        return
+    end
+    UF.Light(f)
+    UF.Portrait(f)
+    UF.Threat(f)
+    UF.More(f)
+end
+
+-- Start or stop listening for one frame's unit. A frame that is off listens
+-- to nothing.
+UF.Listen = function(f, on)
+    if on == (f.listening == true) then return end
+    f.listening = on
+    local ev = f.ev
+    for i = 1, #UF.EVENTS do
+        if on then
+            pcall(ev.RegisterUnitEvent, ev, UF.EVENTS[i], f.unit)
+        else
+            pcall(ev.UnregisterEvent, ev, UF.EVENTS[i])
+        end
+    end
+    for i = 1, #UF.PLAIN do
+        if on then
+            pcall(ev.RegisterEvent, ev, UF.PLAIN[i])
+        else
+            pcall(ev.UnregisterEvent, ev, UF.PLAIN[i])
+        end
+    end
+    if f.info.key == "targettarget" then
+        -- no events exist for this unit: poll, and only while it is shown
+        -- (f.ev is a child, so a hidden frame's OnUpdate does not run)
+        if on then
+            pcall(ev.RegisterUnitEvent, ev, "UNIT_TARGET", "target")
+            ev:SetScript("OnUpdate", function(self, elapsed)
+                self.t = (self.t or 0) + elapsed
+                if self.t >= 0.2 then
+                    self.t = 0
+                    if UnitExists(f.unit) then UF.Light(f); UF.AurasAll(f) end
+                end
+            end)
+        else
+            pcall(ev.UnregisterEvent, ev, "UNIT_TARGET")
+            ev:SetScript("OnUpdate", nil)
+        end
+    end
+end
+
+-- Build one frame. Runs once per unit, the first time it is switched on, and
+-- never in combat (UF.Apply sees to that).
+UF.Create = function(info)
+    local name = "FRHWUF_" .. info.key
+    local ok, f = pcall(CreateFrame, "Button", name, UIParent, "SecureUnitButtonTemplate,BackdropTemplate")
+    local secure = ok and f ~= nil
+    if not secure then f = CreateFrame("Button", name, UIParent, "BackdropTemplate") end
+    f.info, f.unit, f.secure = info, info.unit, secure
+    if secure and f.SetAttribute then
+        f:SetAttribute("unit", info.unit)
+        f:SetAttribute("type1", "target")       -- left click: target the unit
+        f:SetAttribute("type2", "togglemenu")   -- right click: the unit's menu
+    end
+    if f.RegisterForClicks then f:RegisterForClicks("AnyUp") end
+    f:SetBackdrop({ bgFile = WHITE, edgeFile = WHITE, edgeSize = 1,
+                    insets = { left = 1, right = 1, top = 1, bottom = 1 } })
+
+    -- behind the health bar: its background, and the cutaway layer
+    f.back = CreateFrame("StatusBar", nil, f)
+    f.back:SetStatusBarTexture(WHITE)
+    f.back:SetStatusBarColor(1, 1, 1, 0.35)
+    f.health = CreateFrame("StatusBar", nil, f)
+    f.back:SetAllPoints(f.health)
+    f.health.bg = Decor(f.back, "BORDER")
+    f.health.bg:SetAllPoints(true)
+    f.hl = Decor(f.health, "OVERLAY")
+    f.hl:SetAllPoints(true)
+    f.hl:SetBlendMode("ADD")
+    f.hl:SetVertexColor(1, 1, 1, 0.10)
+    f.hl:Hide()
+    f.power = CreateFrame("StatusBar", nil, f)
+    f.power.bg = Decor(f.power, "BORDER")
+    f.power.bg:SetAllPoints(true)
+    f.portBg = Decor(f, "BORDER")
+    f.portBg:SetVertexColor(0, 0, 0, 0.6)
+    f.port = f:CreateTexture(nil, "ARTWORK")
+    f.port:SetAllPoints(f.portBg)
+    f.port:SetTexCoord(0.1, 0.9, 0.1, 0.9)
+    -- texts and icons sit on their own layer above both bars
+    f.top = CreateFrame("Frame", nil, f)
+    f.top:SetAllPoints(f)
+    f.name = f.top:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    f.name:SetWordWrap(false)
+    f.hp = f.top:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    f.pp = f.top:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    f.raid = f.top:CreateTexture(nil, "OVERLAY")
+    f.raid:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcons")
+    f.raid:SetPoint("CENTER", f, "TOP", 0, 0)
+    f.raid:Hide()
+    f.rest = f.top:CreateTexture(nil, "OVERLAY")
+    f.rest:SetTexture("Interface\\CharacterFrame\\UI-StateIcon")
+    f.rest:SetTexCoord(0, 0.5, 0, 0.421875)
+    f.rest:SetPoint("CENTER", f, "TOPLEFT", 0, 0)
+    f.rest:Hide()
+    f.combat = f.top:CreateTexture(nil, "OVERLAY")
+    f.combat:SetTexture("Interface\\CharacterFrame\\UI-StateIcon")
+    f.combat:SetTexCoord(0.5, 1, 0, 0.484375)
+    f.combat:SetPoint("CENTER", f, "TOPRIGHT", 0, 0)
+    f.combat:Hide()
+    f.kit = MakeEdges(f)   -- the skin's edge style, same as the HUD bars
+    UF.Extras(f)
+
+    f:SetScript("OnEnter", function(self)
+        self.hovering = true
+        if db and db.frames then
+            if db.frames[info.key].hover then self.hl:Show() end
+            UF.Fade(self)
+        end
+        if GameTooltip and GameTooltip.SetUnit and UnitExists(self.unit) then
+            if GameTooltip_SetDefaultAnchor then GameTooltip_SetDefaultAnchor(GameTooltip, UIParent) end
+            GameTooltip:SetUnit(self.unit)
+            GameTooltip:Show()
+        end
+    end)
+    f:SetScript("OnLeave", function(self)
+        self.hovering = false
+        self.hl:Hide()
+        if db and db.frames then UF.Fade(self) end
+        if GameTooltip and GameTooltip.Hide then GameTooltip:Hide() end
+    end)
+
+    -- Mouse editing while the options window is open, as for every HUD item:
+    -- CTRL + left hold moves, CTRL + wheel sizes. A unit frame is a stack of
+    -- bars and text and does not turn. Placed from the screen centre.
+    f:SetMovable(true)
+    f:SetClampedToScreen(true)
+    f:SetScript("OnMouseWheel", function(self, delta)
+        if not ME.Active() or UF.Locked() then return end
+        if not (IsControlKeyDown and IsControlKeyDown()) then return end
+        local cfg = db.frames[info.key]
+        local sc = math.floor(((cfg.scale or 1) + ((delta > 0) and ME.SCALE_STEP or -ME.SCALE_STEP)) * 100 + 0.5) / 100
+        if sc < 0.5 then sc = 0.5 elseif sc > 3 then sc = 3 end
+        cfg.scale = sc
+        UF.Apply()
+        UF.Refresh()
+    end)
+    if f.EnableMouseWheel then f:EnableMouseWheel(EditMode()) end
+    f:HookScript("OnMouseDown", function(self, button)
+        if button ~= "LeftButton" or not ME.Active() or UF.Locked() then return end
+        if not (IsControlKeyDown and IsControlKeyDown()) then return end
+        self:StartMoving()
+        self._dragging = true
+    end)
+    f:HookScript("OnMouseUp", function(self, button)
+        if button ~= "LeftButton" or not self._dragging then return end
+        self._dragging = false
+        self:StopMovingOrSizing()
+        local fx, fy = ScreenCenter(self)
+        local ux, uy = UIParent:GetCenter()
+        if fx and ux then
+            local cfg = db.frames[info.key]
+            cfg.x = math.floor(Snap(fx - ux) + 0.5)
+            cfg.y = math.floor(Snap(fy - uy) + 0.5)
+        end
+        UF.Apply()
+        UF.Refresh()
+    end)
+
+    f.ev = CreateFrame("Frame", nil, f)
+    f.ev:SetScript("OnEvent", function(_, event)
+        if not db or not db.frames then return end
+        local route = UF.ROUTE[event]   -- cast bar, auras, heals, status icons
+        if route then
+            route(f)
+        elseif event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" then
+            UF.Health(f)
+        elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_MAXPOWER" then
+            UF.Power(f)
+        elseif event == "UNIT_PORTRAIT_UPDATE" or event == "UNIT_MODEL_CHANGED" then
+            UF.Portrait(f)
+        elseif event == "UNIT_THREAT_SITUATION_UPDATE" then
+            UF.Threat(f)
+        elseif event == "RAID_TARGET_UPDATE" or event == "PLAYER_UPDATE_RESTING" then
+            UF.Icons(f)
+        elseif event == "PLAYER_REGEN_ENABLED" or event == "PLAYER_REGEN_DISABLED" then
+            UF.Icons(f); UF.Fade(f); UF.Threat(f)
+        elseif event == "PLAYER_TARGET_CHANGED" and info.key == "player" then
+            UF.Fade(f)
+            if f.cp then UF.Combo(f) end
+        else
+            UF.Update(f)
+        end
+    end)
+    return f
+end
+
+-- Bars, portrait, texts and icons inside the frame. None of this is
+-- protected, so it may run in combat (the power bar folding away does).
+UF.Layout = function(f, cfg)
+    local ph = 0
+    if cfg.powerH > 0 and not f.noPower then ph = math.min(cfg.powerH, math.max(0, cfg.h - 8)) end
+    local lx, rx = 1, 1   -- inner left / right edge of the bars
+    if cfg.portrait then
+        local pw = cfg.portW > 0 and cfg.portW or (cfg.h - 2)
+        pw = math.min(pw, math.max(4, cfg.w - 30))
+        f.portBg:ClearAllPoints()
+        if cfg.portSide == "right" then
+            f.portBg:SetPoint("TOPRIGHT", -1, -1)
+            f.portBg:SetPoint("BOTTOMRIGHT", -1, 1)
+            rx = pw + 2
+        else
+            f.portBg:SetPoint("TOPLEFT", 1, -1)
+            f.portBg:SetPoint("BOTTOMLEFT", 1, 1)
+            lx = pw + 2
+        end
+        f.portBg:SetWidth(pw)
+        f.portBg:Show()
+    else
+        f.portBg:Hide()
+    end
+    -- info panel: a strip along the bottom that carries the name and health texts
+    local ip = cfg.info and math.min(cfg.infoH, math.max(0, cfg.h - 12)) or 0
+    local base = ip > 0 and (ip + 2) or 1
+    f.infoBg:ClearAllPoints()
+    f.infoBg:SetPoint("BOTTOMLEFT", lx, 1)
+    f.infoBg:SetPoint("BOTTOMRIGHT", -rx, 1)
+    f.infoBg:SetHeight(math.max(1, ip))
+    f.infoBg:SetShown(ip > 0)
+    f.health:ClearAllPoints()
+    f.health:SetPoint("TOPLEFT", lx, -1)
+    f.health:SetPoint("BOTTOMRIGHT", -rx, base + (ph > 0 and (ph + 1) or 0))
+    f.power:ClearAllPoints()
+    f.power:SetPoint("BOTTOMLEFT", lx, base)
+    f.power:SetPoint("BOTTOMRIGHT", -rx, base)
+    f.power:SetHeight(math.max(1, ph))
+    f.power:SetShown(ph > 0)
+    f.pp:SetShown(ph > 0)
+
+    -- a text anchored to a side keeps 4 px off that edge
+    local function Put(fs, bar, anchor, x, y)
+        fs:ClearAllPoints()
+        fs:SetPoint(anchor, bar, anchor, x + (anchor == "LEFT" and 4 or anchor == "RIGHT" and -4 or 0), y)
+        fs:SetJustifyH((anchor == "LEFT" or anchor == "RIGHT") and anchor or "CENTER")
+    end
+    local textHome = ip > 0 and f.infoBg or f.health
+    Put(f.name, textHome, cfg.nAnchor, cfg.nX, cfg.nY)
+    Put(f.hp, textHome, cfg.hAnchor, cfg.hX, cfg.hY)
+    Put(f.pp, f.power, cfg.pAnchor, cfg.pX, cfg.pY)
+    Put(f.c1, f.health, cfg.c1Anchor, cfg.c1X, cfg.c1Y)
+    Put(f.c2, f.health, cfg.c2Anchor, cfg.c2X, cfg.c2Y)
+    -- a long name is cut short rather than run under the health text
+    local barW = cfg.w - lx - rx
+    local share = (cfg.health ~= "none" and cfg.nAnchor ~= cfg.hAnchor) and 0.62 or 1
+    f.name:SetWidth(math.max(20, barW * share - 8))
+
+    f.raid:SetSize(cfg.iconSize, cfg.iconSize)
+    f.rest:SetSize(cfg.iconSize, cfg.iconSize)
+    f.combat:SetSize(cfg.iconSize, cfg.iconSize)
+    UF.LayoutMore(f, cfg, barW)
+end
+
+-- Typeface, size, outline and shadow of every unit frame text. Called from
+-- TXT.Apply as well, so the frames follow the Text tab.
+UF.Fonts = function()
+    if not db or not db.frames or not db.text then return end
+    local t = db.text
+    for key, f in pairs(UF.frames) do
+        local cfg = db.frames[key]
+        local path = TXT.FontPath(cfg.font or t.font)
+        TXT.Font(f.name, path, cfg.fontSize, t.outline)
+        TXT.Font(f.hp, path, cfg.fontSize, t.outline)
+        TXT.Font(f.pp, path, math.max(6, math.min(cfg.fontSize, cfg.powerH)), t.outline)
+        UF.FontMore(f, path, cfg, t)
+        for _, fs in ipairs({ f.name, f.hp, f.pp, f.c1, f.c2 }) do
+            if t.shadow then
+                fs:SetShadowColor(0, 0, 0, 1); fs:SetShadowOffset(1, -1)
+            else
+                fs:SetShadowOffset(0, 0)
+            end
+        end
+    end
+end
+
+-- Text colour: the skin's, or the custom one from the Text tab.
+UF.TextColor = function()
+    local r, g, b, a = TXT.Color()
+    for key, f in pairs(UF.frames) do
+        f.hp:SetTextColor(r, g, b, a)
+        f.pp:SetTextColor(r, g, b, a)
+        f.c1:SetTextColor(r, g, b, a)
+        f.c2:SetTextColor(r, g, b, a)
+        if f.cast then
+            f.cast.text:SetTextColor(r, g, b, a)
+            f.cast.time:SetTextColor(r, g, b, a)
+        end
+        if db and db.frames and db.frames[key].enabled and UnitExists(f.unit) then
+            UF.Name(f)   -- the name may be class coloured
+        else
+            f.name:SetTextColor(r, g, b, a)
+        end
+    end
+end
+
+-- Skin colours. Called from ApplySkin; nothing here is protected.
+UF.Paint = function()
+    for key, f in pairs(UF.frames) do
+        local cfg = db and db.frames and db.frames[key]
+        if cfg then f:SetBackdropColor(cfg.bgr, cfg.bgg, cfg.bgb, 0.85) else f:SetBackdropColor(0, 0, 0, 0.85) end
+        f:SetBackdropBorderColor(Col(currentSkin.border))
+        PaintEdges(f.kit, currentSkin)
+        if db and db.frames and db.frames[key].enabled then UF.Update(f) end
+    end
+    UF.TextColor()
+end
+
+-- Push db.frames to the frames: build, place, size, show or hide, and hide
+-- or restore the game's own. In combat it does nothing but remember that it
+-- was asked, and runs when combat ends.
+UF.Apply = function()
+    if not db or type(db.frames) ~= "table" then return end
+    if UF.Locked() then
+        TXT.AfterCombat("frames", UF.Apply)
+        return
+    end
+    UF.interp = Enum and Enum.StatusBarInterpolation and Enum.StatusBarInterpolation.ExponentialEaseOut or nil
+    local edit = EditMode()
+    for i = 1, #UF.UNITS do
+        local info = UF.UNITS[i]
+        local cfg = db.frames[info.key]
+        local f = UF.frames[info.key]
+        -- While the options window is open every unit frame is on screen, the
+        -- switched-off ones too (dimmed, tagged OFF), so each can be placed
+        -- and sized with the mouse before or after it is switched on.
+        local want = cfg.enabled or edit
+        if want and not f then
+            f = UF.Create(info)
+            UF.frames[info.key] = f
+        end
+        if f then
+            if f.secure and UnregisterUnitWatch then UnregisterUnitWatch(f) end
+            if want then
+                f:ClearAllPoints()
+                f:SetScale(cfg.scale)
+                f:SetPoint("CENTER", UIParent, "CENTER", cfg.x / cfg.scale, cfg.y / cfg.scale)
+                f:SetSize(cfg.w, cfg.h)
+                f:SetFrameStrata(cfg.strata)
+                f:SetFrameLevel(cfg.level)
+                f.back:SetFrameLevel(cfg.level + 1)
+                f.health:SetFrameLevel(cfg.level + 2)
+                f.power:SetFrameLevel(cfg.level + 2)
+                f.top:SetFrameLevel(cfg.level + 6)
+                local tex = TXT.Find(UF.TEX, cfg.texture).path
+                f.health:SetStatusBarTexture(tex)
+                f.power:SetStatusBarTexture(tex)
+                if f.health.SetReverseFill then
+                    f.health:SetReverseFill(cfg.hReverse)
+                    f.power:SetReverseFill(cfg.pReverse)
+                end
+                UF.Layout(f, cfg)
+                UF.Listen(f, true)
+                if not f.offTag then
+                    f.offTag = f.top:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                    f.offTag:SetPoint("CENTER", f, "CENTER", 0, 0)
+                    f.offTag:SetText("OFF  -  tick Enable on the Frames tab")
+                end
+                f.offTag:SetShown(not cfg.enabled)
+                if cfg.enabled then
+                    f:SetAlpha(1)
+                    UF.Fade(f)
+                else
+                    f:SetAlpha(0.45)
+                end
+                if info.key == "player" or edit then
+                    f:Show()                    -- the options window shows every frame
+                elseif f.secure and RegisterUnitWatch then
+                    RegisterUnitWatch(f)        -- the client shows it while the unit exists
+                else
+                    f:SetShown(UnitExists(info.unit) and true or false)
+                end
+            else
+                UF.Listen(f, false)
+                f:Hide()
+            end
+        end
+        TXT.Stash(_G[info.blizz], cfg.enabled and cfg.hideBlizzard)
+    end
+    local pc = db.frames.player
+    TXT.Stash(_G.PlayerCastingBarFrame or _G.CastingBarFrame, pc.enabled and pc.cb and pc.cbHideBlizz)
+    UF.Fonts()
+    UF.Paint()
+end
+
+-- Show the selected unit's settings on the Frames tab.
+UF.Refresh = function()
+    local ui = UF.ui
+    if not ui or not db or type(db.frames) ~= "table" then return end
+    local was = suppress
+    suppress = true
+    local cfg = db.frames[UF.sel]
+    local label = ""
+    for i = 1, #UF.UNITS do
+        local info = UF.UNITS[i]
+        local b = ui.pick[info.key]
+        b:SetText(info.label .. (db.frames[info.key].enabled and "  (on)" or "  (off)"))
+        if info.key == UF.sel then b:Disable(); label = info.label else b:Enable() end
+    end
+    if cfg.enabled then
+        ui.status:SetText(label .. " frame is ON. Hold CTRL and drag it, or use the sliders. Changes made in combat apply when it ends.")
+    else
+        ui.status:SetText(label .. " frame is OFF: nothing below shows until you tick \"Enable this frame\".")
+    end
+    TXT.ShowOptions(ui.ws, UF.OPTS, cfg, UF.sel, db.text and db.text.font)
+    suppress = was
+end
+
+FRHW_FRAMES = UF
+FRHW_ApplyFrames = function() if db then UF.Apply() end end
+-- Open the Frames tab on one unit ("player", "target", "targettarget").
+function FRHW_SelectFrame(key)
+    if not DEFAULTS.frames[key] then return false end
+    UF.sel = key
+    UF.Refresh()
+    return true
+end
+
+-- ============================ Frames tab ============================
+do
+    local page = CreateFrame("Frame", nil, panel)
+    page:SetPoint("TOPLEFT", 8, -70)
+    page:SetPoint("BOTTOMRIGHT", -8, 26)
+    page:Hide()
+    AddTab("frames", "FRHWTabFrames", "Frames", page)
+    local scroll, child = MakeScroll("FRHWFramesScroll", page, -4)
+    local flow = NewFlow(scroll, child)
+    local ui = { pick = {} }
+    UF.ui = ui
+
+    -- which frame this page is editing: one button each, the current one greyed
+    for i = 1, #UF.UNITS do
+        local info = UF.UNITS[i]
+        ui.pick[info.key] = MakeButton(child, info.label, 0, 0, 120, 22, function()
+            UF.sel = info.key
+            UF.Refresh()
+        end, "FRHWUFSel_" .. info.key)
+    end
+    Row(flow, LAYOUT.slider, ui.pick.player, ui.pick.targettarget, ui.pick.target)
+    NoteRow(flow, "")
+    ui.status = flow.rows[#flow.rows].note
+    flow.rows[#flow.rows].h = 34   -- room for two lines
+
+    ui.ws = TXT.BuildOptions(flow, child, "FRHWUFO_", UF.OPTS,
+        function() return db.frames[UF.sel] end,
+        function(o, isSlider)
+            UF.Apply()
+            if not isSlider then UF.Refresh() end
+        end)
+
+    -- opening the window shows every frame that is on (so it can be placed
+    -- with nothing targeted); closing it hands them back to the client
+    panel:HookScript("OnShow", function() UF.Apply() end)
+    panel:HookScript("OnHide", function() UF.Apply() end)
+end
+
+-- the wheel only belongs to a unit frame while the options window is open
+ME.onInteractive = function(on)
+    -- opening or closing the window changes which frames are on screen
+    -- (all three while it is open), so apply before handing out the wheel
+    if db and db.frames then UF.Apply() end
+    for _, f in pairs(UF.frames) do
+        if f.EnableMouseWheel then f:EnableMouseWheel(on) end
+    end
+end
+
+-----------------------------------------------------------------------
+-- Unit frame extras: cast bar, buffs / debuffs, aura bars, incoming heals,
+-- custom texts, combo points, status icons
+--
+-- Same rules as the frames themselves: each piece is built the first time
+-- its option is on, driven by events, and hands whatever the client marks
+-- secret straight to a widget. On this client cast and aura times arrive as
+-- "duration objects"; a bar or a cooldown takes one whole (SetTimerDuration,
+-- SetCooldownFromDurationObject), so no arithmetic is ever done on them.
+-- Where a client has no such object the plain numbers are used instead.
+-----------------------------------------------------------------------
+
+-- True only for a value we are allowed to read that is also truthy.
+UF.Flag = function(fn, ...)
+    if not fn then return false end
+    local ok, v = pcall(fn, ...)
+    return ok and IsReadable(v) and v and true or false
+end
+
+-- The pieces every frame has from the start (cheap: textures and strings).
+UF.Extras = function(f)
+    f.heal = CreateFrame("StatusBar", nil, f.health)
+    f.heal:SetStatusBarTexture(WHITE)
+    f.heal:SetStatusBarColor(0.2, 1, 0.4, 0.45)
+    f.heal:Hide()
+    if f.health.SetClipsChildren then f.health:SetClipsChildren(true) end
+    f.infoBg = Decor(f, "BORDER")
+    f.infoBg:SetVertexColor(0, 0, 0, 0.5)
+    f.infoBg:Hide()
+    f.c1 = f.top:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    f.c2 = f.top:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    f.stat = {}
+    local function Icon(key, tex, point, shift)
+        local t = f.top:CreateTexture(nil, "OVERLAY")
+        if tex then t:SetTexture(tex) end
+        t.point, t.shift = point, shift
+        t:Hide()
+        f.stat[key] = t
+    end
+    Icon("leader", "Interface\\GroupFrame\\UI-Group-LeaderIcon", "TOPLEFT", 1)
+    Icon("phase", "Interface\\TargetingFrame\\UI-PhasingIcon", "TOP", 1)
+    Icon("rez", "Interface\\RaidFrame\\Raid-Icon-Rez", "CENTER", 0)
+    Icon("pvp", nil, "BOTTOMRIGHT", 0)
+    f.buffs, f.debuffs, f.abars = {}, {}, {}
+end
+
+-- ---------------------------------------------------------------- cast bar
+UF.CastBar = function(f)
+    if f.cast then return f.cast end
+    local cb = CreateFrame("StatusBar", nil, f)
+    f.cast = cb
+    cb:SetStatusBarTexture(WHITE)
+    cb.bg = Decor(cb, "BACKGROUND")
+    cb.bg:SetPoint("TOPLEFT", -1, 1)
+    cb.bg:SetPoint("BOTTOMRIGHT", 1, -1)
+    cb.bg:SetVertexColor(0, 0, 0, 0.85)
+    cb.icon = cb:CreateTexture(nil, "ARTWORK")
+    cb.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    cb.shield = Decor(cb, "OVERLAY")   -- grey wash over a cast that cannot be interrupted
+    cb.shield:SetAllPoints(true)
+    cb.shield:SetVertexColor(0.6, 0.6, 0.6, 0.5)
+    cb.shield:Hide()
+    cb.text = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    cb.text:SetPoint("LEFT", 4, 0)
+    cb.text:SetJustifyH("LEFT")
+    cb.text:SetWordWrap(false)
+    cb.time = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    cb.time:SetPoint("RIGHT", -4, 0)
+    cb:Hide()
+    -- runs only while a cast is on screen
+    cb:SetScript("OnUpdate", function(self, elapsed)
+        self.t = (self.t or 0) + elapsed
+        if self.s then
+            -- plain-number timing (a client without duration objects)
+            local now = GetTime()
+            if now >= self.e then self:Hide(); return end
+            self:SetValue(self.chan and (self.e - now) or (now - self.s))
+            if self.t >= 0.05 then
+                self.t = 0
+                if self.showTime then self.time:SetFormattedText("%.1f", self.e - now) end
+            end
+        elseif self.t >= 0.05 then
+            self.t = 0
+            if self.showTime and self.GetTimerDuration then
+                local d = self:GetTimerDuration()
+                if d then self.time:SetFormattedText("%.1f", d:GetRemainingDuration()) end
+            end
+        end
+    end)
+    UF.Layout(f, db.frames[f.info.key])   -- size and place it now that it exists
+    UF.Fonts()
+    UF.TextColor()
+    return cb
+end
+
+-- Start, refresh or end the cast bar from what the unit is doing right now.
+-- Every cast event lands here; asking the client again is simpler and safer
+-- than tracking each event's meaning.
+UF.Cast = function(f)
+    local cfg = db.frames[f.info.key]
+    if not cfg.cb or f.info.key == "targettarget" then
+        if f.cast then f.cast:Hide() end
+        return
+    end
+    local u = f.unit
+    local chan = false
+    local name, _, texture, s, e, _, _, notInt = UnitCastingInfo(u)
+    local cb
+    if UnitCastingDuration then
+        local dur = UnitCastingDuration(u)
+        if not dur and UnitChannelDuration then
+            dur = UnitChannelDuration(u)
+            if dur then
+                chan = true
+                name, _, texture, s, e, _, notInt = UnitChannelInfo(u)
+            end
+        end
+        if not dur then
+            if f.cast then f.cast:Hide() end
+            return
+        end
+        cb = UF.CastBar(f)
+        cb.s = nil
+        local dir = Enum and Enum.StatusBarTimerDirection
+        cb:SetTimerDuration(dur, Enum and Enum.StatusBarInterpolation and Enum.StatusBarInterpolation.Immediate or nil,
+            dir and (chan and dir.RemainingTime or dir.ElapsedTime) or nil)
+    else
+        if not IsReadable(name) then
+            chan = true
+            name, _, texture, s, e, _, notInt = UnitChannelInfo(u)
+        end
+        if not IsReadable(name) or not IsReadable(s) or not IsReadable(e) or type(s) ~= "number" or type(e) ~= "number" then
+            if f.cast then f.cast:Hide() end
+            return
+        end
+        cb = UF.CastBar(f)
+        cb.s, cb.e = s / 1000, e / 1000
+        cb:SetMinMaxValues(0, cb.e - cb.s)
+    end
+    cb.chan, cb.showTime = chan, cfg.cbTime
+    cb.text:SetText(name)
+    cb.icon:SetTexture(texture)
+    if not cfg.cbTime then cb.time:SetText("") end
+    if IsReadable(notInt) then
+        cb.shield:SetAlpha(1)
+        cb.shield:SetShown(notInt and true or false)
+    elseif cb.shield.SetAlphaFromBoolean then
+        cb.shield:Show()
+        cb.shield:SetAlphaFromBoolean(notInt, 1, 0)
+    else
+        cb.shield:Hide()
+    end
+    cb:Show()
+end
+
+-- ------------------------------------------------------- buffs and debuffs
+UF.AuraButton = function(f, list, i)
+    local b = CreateFrame("Frame", nil, f)
+    b.bg = Decor(b, "BACKGROUND")
+    b.bg:SetAllPoints(true)
+    b.bg:SetVertexColor(0, 0, 0, 1)
+    b.icon = b:CreateTexture(nil, "ARTWORK")
+    b.icon:SetPoint("TOPLEFT", 1, -1)
+    b.icon:SetPoint("BOTTOMRIGHT", -1, 1)
+    b.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    b.cd = CreateFrame("Cooldown", nil, b, "CooldownFrameTemplate")
+    b.cd:SetAllPoints(b.icon)
+    b.cd:SetDrawEdge(false)
+    b.over = CreateFrame("Frame", nil, b)
+    b.over:SetAllPoints(b)
+    if b.over.SetFrameLevel and b.cd.GetFrameLevel then b.over:SetFrameLevel(b.cd:GetFrameLevel() + 2) end
+    b.count = b.over:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    b.count:SetPoint("BOTTOMRIGHT", 1, 0)
+    b:EnableMouse(true)
+    b:SetScript("OnEnter", function(self)
+        if not GameTooltip or not GameTooltip.SetUnitAura then return end
+        GameTooltip:SetOwner(self, "ANCHOR_BOTTOMRIGHT")
+        pcall(GameTooltip.SetUnitAura, GameTooltip, f.unit, self.index, self.filter)
+        GameTooltip:Show()
+    end)
+    b:SetScript("OnLeave", function() if GameTooltip and GameTooltip.Hide then GameTooltip:Hide() end end)
+    list[i] = b
+    UF.PlaceAura(f, list, i)
+    return b
+end
+
+-- Put button i of a row set where the layout says (list.size / perRow / dir / base).
+UF.PlaceAura = function(f, list, i)
+    local b = list[i]
+    local size, per = list.size or 20, list.perRow or 8
+    local col, row = (i - 1) % per, math.floor((i - 1) / per)
+    b:SetSize(size, size)
+    b:ClearAllPoints()
+    if list.dir == -1 then
+        b:SetPoint("TOPLEFT", f, "BOTTOMLEFT", col * (size + 2), -((list.base or 3) + row * (size + 2)))
+    else
+        b:SetPoint("BOTTOMLEFT", f, "TOPLEFT", col * (size + 2), (list.base or 3) + row * (size + 2))
+    end
+end
+
+-- Fill one set of aura icons from the client. The filter does the choosing
+-- ("only mine" is the client's PLAYER filter), so nothing secret is compared.
+UF.FillAuras = function(f, list, on, max, filter)
+    local shown = 0
+    local A = C_UnitAuras
+    if on and A and A.GetAuraDataByIndex then
+        for i = 1, max do
+            local ok, a = pcall(A.GetAuraDataByIndex, f.unit, i, filter)
+            if not ok or type(a) ~= "table" then break end
+            local b = list[i] or UF.AuraButton(f, list, i)
+            b.index, b.filter = i, filter
+            b.icon:SetTexture(a.icon)
+            local okd, d = false, nil
+            if A.GetAuraDuration then okd, d = pcall(A.GetAuraDuration, f.unit, a.auraInstanceID) end
+            if okd and d and b.cd.SetCooldownFromDurationObject then
+                pcall(b.cd.SetCooldownFromDurationObject, b.cd, d)
+            elseif IsReadable(a.expirationTime) and IsReadable(a.duration)
+                and type(a.duration) == "number" and type(a.expirationTime) == "number" and a.duration > 0 then
+                b.cd:SetCooldown(a.expirationTime - a.duration, a.duration)
+            else
+                b.cd:Clear()
+            end
+            local n = a.applications
+            if IsReadable(n) and type(n) == "number" then
+                b.count:SetText(n > 1 and tostring(n) or "")
+            elseif A.GetAuraApplicationDisplayCount then
+                local okc, txt = pcall(A.GetAuraApplicationDisplayCount, f.unit, a.auraInstanceID, 2, 99)
+                if okc then b.count:SetText(txt) else b.count:SetText("") end
+            else
+                b.count:SetText("")
+            end
+            b:Show()
+            shown = i
+        end
+    end
+    for i = shown + 1, #list do list[i]:Hide() end
+end
+
+-- --------------------------------------------------------------- aura bars
+UF.AuraBar = function(f, i)
+    local bar = CreateFrame("StatusBar", nil, f)
+    bar:SetStatusBarTexture(WHITE)
+    bar.bg = Decor(bar, "BACKGROUND")
+    bar.bg:SetPoint("TOPLEFT", -1, 1)
+    bar.bg:SetPoint("BOTTOMRIGHT", 1, -1)
+    bar.bg:SetVertexColor(0, 0, 0, 0.85)
+    bar.icon = bar:CreateTexture(nil, "ARTWORK")
+    bar.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    bar.icon:SetPoint("RIGHT", bar, "LEFT", -2, 0)
+    bar.name = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    bar.name:SetPoint("LEFT", 4, 0)
+    bar.name:SetJustifyH("LEFT")
+    bar.name:SetWordWrap(false)
+    f.abars[i] = bar
+    return bar
+end
+
+UF.AuraBars = function(f)
+    local cfg = db.frames[f.info.key]
+    local list, shown = f.abars, 0
+    local A = C_UnitAuras
+    if cfg.abOn and A and A.GetAuraDataByIndex then
+        local debuff = cfg.abType == "debuffs"
+        local filter = (debuff and "HARMFUL" or "HELPFUL") .. (cfg.abMine and "|PLAYER" or "")
+        local w = math.max(20, cfg.w - cfg.abH - 2)
+        for i = 1, cfg.abMax do
+            local ok, a = pcall(A.GetAuraDataByIndex, f.unit, i, filter)
+            if not ok or type(a) ~= "table" then break end
+            local bar = list[i]
+            if not bar then
+                bar = UF.AuraBar(f, i)
+                UF.Fonts()
+                UF.TextColor()
+            end
+            bar:SetSize(w, cfg.abH)
+            bar.icon:SetSize(cfg.abH, cfg.abH)
+            bar:ClearAllPoints()
+            bar:SetPoint("BOTTOMRIGHT", f, "TOPRIGHT", 0, (f.abBase or 3) + (i - 1) * (cfg.abH + 3))
+            bar.name:SetWidth(w - 8)
+            bar.name:SetText(a.name)
+            bar.icon:SetTexture(a.icon)
+            if debuff then bar:SetStatusBarColor(0.8, 0.2, 0.2, 1) else bar:SetStatusBarColor(Col(currentSkin.accent, 1)) end
+            local okd, d = false, nil
+            if A.GetAuraDuration then okd, d = pcall(A.GetAuraDuration, f.unit, a.auraInstanceID) end
+            local dir = Enum and Enum.StatusBarTimerDirection
+            if okd and d and bar.SetTimerDuration and dir then
+                bar:SetTimerDuration(d, Enum.StatusBarInterpolation and Enum.StatusBarInterpolation.Immediate or nil, dir.RemainingTime)
+            else
+                bar:SetMinMaxValues(0, 1)   -- no timer available: a full bar
+                bar:SetValue(1)
+            end
+            bar:Show()
+            shown = i
+        end
+    end
+    for i = shown + 1, #list do list[i]:Hide() end
+end
+
+-- Buffs, debuffs and aura bars together: one UNIT_AURA, one pass.
+UF.AurasAll = function(f)
+    local cfg = db.frames[f.info.key]
+    UF.FillAuras(f, f.buffs, cfg.bOn, cfg.bMax, cfg.bMine and "HELPFUL|PLAYER" or "HELPFUL")
+    UF.FillAuras(f, f.debuffs, cfg.dOn, cfg.dMax, cfg.dMine and "HARMFUL|PLAYER" or "HARMFUL")
+    UF.AuraBars(f)
+end
+
+-- ----------------------------------------------------------- incoming heals
+-- A bar that starts where the health fill ends and is as wide as the whole
+-- health bar, clipped by it: the heal amount needs no arithmetic at all.
+UF.Heal = function(f)
+    local cfg = db.frames[f.info.key]
+    if not cfg.hpred or not UnitGetIncomingHeals then f.heal:Hide(); return end
+    local ok, inc = pcall(UnitGetIncomingHeals, f.unit)
+    if not ok or inc == nil then f.heal:Hide(); return end   -- nil: no heal data for this unit
+    f.heal:SetMinMaxValues(0, UnitHealthMax(f.unit))
+    f.heal:SetShown(pcall(f.heal.SetValue, f.heal, inc))   -- nil (no heal data) just hides it
+end
+
+-- ------------------------------------------------------------- custom texts
+UF.Custom = function(f)
+    local cfg = db.frames[f.info.key]
+    for slot = 1, 2 do
+        local kind = cfg[slot == 1 and "c1" or "c2"]
+        local fs = slot == 1 and f.c1 or f.c2
+        if kind == "none" or not UnitExists(f.unit) then
+            fs:SetText("")
+        elseif kind == "level" then
+            local ok, lvl = pcall(UnitLevel, f.unit)
+            if ok and IsReadable(lvl) and type(lvl) == "number" then
+                fs:SetText(lvl > 0 and tostring(lvl) or "??")
+            else
+                fs:SetText("")
+            end
+        elseif kind == "class" then
+            local ok, a = false, nil
+            if UF.Flag(UnitIsPlayer, f.unit) then
+                ok, a = pcall(UnitClass, f.unit)
+            elseif UnitCreatureType then
+                ok, a = pcall(UnitCreatureType, f.unit)
+            end
+            if ok then fs:SetText(a) else fs:SetText("") end
+        elseif kind == "hcur" then
+            TXT.Value(fs, "cur", UnitHealth(f.unit), UnitHealthMax(f.unit))
+        elseif kind == "hpp" then
+            TXT.Value(fs, "percent", UnitHealth(f.unit), UnitHealthMax(f.unit))
+        elseif kind == "pow" then
+            TXT.Value(fs, "cur", UnitPower(f.unit), UnitPowerMax(f.unit))
+        else
+            TXT.Value(fs, "percent", UnitPower(f.unit), UnitPowerMax(f.unit))
+        end
+    end
+end
+
+-- ------------------------------------------------------------- combo points
+-- Same reading as the HUD's own combo element, including its secret path.
+UF.Combo = function(f)
+    local cp = GetComboPoints("player", "target")
+    if not IsReadable(cp) then cp = UnitPower("player", 14) end
+    for i = 1, #f.cp do
+        local b = f.cp[i]
+        if IsReadable(cp) then
+            b:SetMinMaxValues(0, 1)
+            b:SetValue(1)
+            b:SetAlpha(type(cp) == "number" and i <= cp and 1 or 0.2)
+        else
+            b:SetAlpha(1)
+            b:SetMinMaxValues(i - 1, i)
+            b:SetValue(cp)
+        end
+    end
+end
+
+-- ------------------------------------------------------------- status icons
+UF.Status = function(f)
+    local cfg = db.frames[f.info.key]
+    local u = f.unit
+    f.stat.leader:SetShown(cfg.leaderIcon and UF.Flag(UnitIsGroupLeader, u))
+    f.stat.rez:SetShown(cfg.rezIcon and UF.Flag(UnitHasIncomingResurrection, u))
+    f.stat.phase:SetShown(cfg.phaseIcon and f.info.key ~= "player" and UF.Flag(UnitPhaseReason, u))
+    local pvp = false
+    if cfg.pvpIcon and UF.Flag(UnitIsPVP, u) and UnitFactionGroup then
+        local ok, faction = pcall(UnitFactionGroup, u)
+        if ok and IsReadable(faction) and (faction == "Alliance" or faction == "Horde") then
+            f.stat.pvp:SetTexture("Interface\\TargetingFrame\\UI-PVP-" .. faction)
+            pvp = true
+        end
+    end
+    f.stat.pvp:SetShown(pvp)
+end
+
+-- Everything above for a unit that exists; called from UF.Update.
+UF.More = function(f)
+    UF.Cast(f)
+    UF.AurasAll(f)
+    UF.Heal(f)
+    UF.Status(f)
+    UF.Custom(f)
+    if f.cp then UF.Combo(f) end
+end
+
+-- And for a unit that does not (the placeholder shown while placing a frame).
+UF.Clear = function(f)
+    if f.cast then f.cast:Hide() end
+    for _, list in ipairs({ f.buffs, f.debuffs, f.abars }) do
+        for i = 1, #list do list[i]:Hide() end
+    end
+    f.heal:Hide()
+    for _, t in pairs(f.stat) do t:Hide() end
+    f.c1:SetText("")
+    f.c2:SetText("")
+end
+
+-- Which function an event goes to (looked up in the frame's OnEvent).
+UF.ROUTE = {
+    UNIT_AURA = UF.AurasAll,
+    UNIT_HEAL_PREDICTION = UF.Heal,
+    UNIT_PHASE = UF.Status,
+    PARTY_LEADER_CHANGED = UF.Status,
+    GROUP_ROSTER_UPDATE = UF.Status,
+    INCOMING_RESURRECT_CHANGED = UF.Status,
+}
+for _, ev in ipairs({ "START", "CHANNEL_START", "STOP", "CHANNEL_STOP", "DELAYED", "CHANNEL_UPDATE",
+                      "FAILED", "INTERRUPTED", "INTERRUPTIBLE", "NOT_INTERRUPTIBLE", "SUCCEEDED" }) do
+    UF.ROUTE["UNIT_SPELLCAST_" .. ev] = UF.Cast
+end
+
+-- Size and place the extras. Things attached above and below the frame are
+-- stacked outwards in a fixed order, so they never overlap each other:
+-- cast bar, combo points, buffs, debuffs, aura bars.
+UF.LayoutMore = function(f, cfg, barW)
+    local above, below = 3, 3
+
+    -- incoming heals: from the end of the health fill, clipped by the bar
+    local tex = f.health:GetStatusBarTexture()
+    f.heal:ClearAllPoints()
+    if tex then
+        if cfg.hReverse then
+            f.heal:SetPoint("TOPRIGHT", tex, "TOPLEFT")
+            f.heal:SetPoint("BOTTOMRIGHT", tex, "BOTTOMLEFT")
+        else
+            f.heal:SetPoint("TOPLEFT", tex, "TOPRIGHT")
+            f.heal:SetPoint("BOTTOMLEFT", tex, "BOTTOMRIGHT")
+        end
+        if f.heal.SetReverseFill then f.heal:SetReverseFill(cfg.hReverse) end
+    end
+    f.heal:SetWidth(math.max(1, barW))
+
+    -- cast bar
+    if f.cast then
+        local cb = f.cast
+        local icon = cfg.cbIcon and (cfg.cbH + 2) or 0
+        cb:SetSize(math.max(20, (cfg.cbW > 0 and cfg.cbW or cfg.w) - icon), cfg.cbH)
+        cb:ClearAllPoints()
+        if cfg.cbPos == "above" then
+            cb:SetPoint("BOTTOMRIGHT", f, "TOPRIGHT", 0, above)
+        else
+            cb:SetPoint("TOPRIGHT", f, "BOTTOMRIGHT", 0, -below)
+        end
+        cb.icon:ClearAllPoints()
+        cb.icon:SetPoint("RIGHT", cb, "LEFT", -2, 0)
+        cb.icon:SetSize(cfg.cbH, cfg.cbH)
+        cb.icon:SetShown(cfg.cbIcon)
+        cb.text:SetWidth(math.max(10, cb:GetWidth() - 44))
+        cb:SetStatusBarColor(cfg.cbr, cfg.cbg, cfg.cbb, 1)
+        cb.showTime = cfg.cbTime
+    end
+    if cfg.cb and f.info.key ~= "targettarget" then
+        if cfg.cbPos == "above" then above = above + cfg.cbH + 4 else below = below + cfg.cbH + 4 end
+    end
+
+    -- combo points (player): five pips across the top
+    if f.info.key == "player" and cfg.classbar then
+        if not f.cp then
+            f.cp = {}
+            for i = 1, 5 do
+                local b = CreateFrame("StatusBar", nil, f)
+                b:SetStatusBarTexture(WHITE)
+                b.bg = Decor(b, "BACKGROUND")
+                b.bg:SetPoint("TOPLEFT", -1, 1)
+                b.bg:SetPoint("BOTTOMRIGHT", 1, -1)
+                b.bg:SetVertexColor(0, 0, 0, 0.85)
+                f.cp[i] = b
+            end
+        end
+        local w = (cfg.w - 4 * 3) / 5
+        for i = 1, 5 do
+            local b = f.cp[i]
+            b:SetSize(w, cfg.cpH)
+            b:ClearAllPoints()
+            b:SetPoint("BOTTOMLEFT", f, "TOPLEFT", (i - 1) * (w + 3), above)
+            b:SetStatusBarColor(Col(currentSkin.combo, 1))
+            b:Show()
+        end
+        above = above + cfg.cpH + 4
+    elseif f.cp then
+        for i = 1, 5 do f.cp[i]:Hide() end
+    end
+
+    -- buffs, then debuffs, each on its side of the frame
+    local function Stack(list, on, size, max, pos)
+        local per = math.max(1, math.floor((cfg.w + 2) / (size + 2)))
+        list.size, list.perRow = size, per
+        list.dir = pos == "below" and -1 or 1
+        list.base = pos == "below" and below or above
+        for i = 1, #list do UF.PlaceAura(f, list, i) end
+        if on then
+            local used = math.ceil(max / per) * (size + 2) + 2
+            if pos == "below" then below = below + used else above = above + used end
+        end
+    end
+    Stack(f.buffs, cfg.bOn, cfg.bSize, cfg.bMax, cfg.bPos)
+    Stack(f.debuffs, cfg.dOn, cfg.dSize, cfg.dMax, cfg.dPos)
+    f.abBase = above   -- aura bars sit above everything else
+
+    -- status icons along the frame's edge
+    for _, t in pairs(f.stat) do
+        t:SetSize(cfg.iconSize, cfg.iconSize)
+        t:ClearAllPoints()
+        t:SetPoint("CENTER", f, t.point, t.shift * cfg.iconSize, 0)
+    end
+end
+
+-- Fonts of the extras; called from UF.Fonts for each frame.
+UF.FontMore = function(f, path, cfg, t)
+    TXT.Font(f.c1, path, cfg.fontSize, t.outline)
+    TXT.Font(f.c2, path, cfg.fontSize, t.outline)
+    if f.cast then
+        local size = math.max(6, math.min(cfg.fontSize, cfg.cbH - 2))
+        TXT.Font(f.cast.text, path, size, t.outline)
+        TXT.Font(f.cast.time, path, size, t.outline)
+    end
+    for i = 1, #f.abars do
+        TXT.Font(f.abars[i].name, path, math.max(6, math.min(cfg.fontSize, cfg.abH - 2)), t.outline)
+    end
+    for _, list in ipairs({ f.buffs, f.debuffs }) do
+        for i = 1, #list do TXT.Font(list[i].count, path, 10, "OUTLINE") end
+    end
+end
+
+-----------------------------------------------------------------------
+-- Map (the "2" build): minimap and world map options
+--
+-- ElvUI's map options, each one off until ticked. An option that is off
+-- touches nothing: no hook, no script, no frame. Every change to a game
+-- frame is remembered in MP.state and undone when the option is switched
+-- off again, so nothing here needs a reload.
+--
+-- To add an option: one row in MP.OPTS, then use db.map.<k> in MP.Apply.
+-----------------------------------------------------------------------
+MP.OPTS = {
+    { t = "header", l = "Minimap" },
+    { k = "skin",      t = "check",  l = "Square minimap, flat border", d = false },
+    { k = "size",      t = "slider", l = "Size (when square)", d = 175, min = 100, max = 320, step = 1 },
+    { k = "scale",     t = "slider", l = "Scale", d = 1, min = 0.5, max = 2, step = 0.05 },
+    { k = "coords",    t = "check",  l = "Coordinates under the minimap", d = false },
+    { k = "wheel",     t = "check",  l = "Mouse wheel zooms", d = false },
+    { k = "hideZoom",  t = "check",  l = "Hide zoom buttons", d = false },
+    { k = "reset",     t = "check",  l = "Reset zoom after a delay", d = false },
+    { k = "resetTime", t = "slider", l = "Delay (seconds)", d = 3, min = 1, max = 15, step = 1 },
+    { k = "hideZone",  t = "check",  l = "Hide zone name bar", d = false },
+    { k = "hideCal",   t = "check",  l = "Hide calendar button", d = false },
+    { k = "hideTrack", t = "check",  l = "Hide tracking button", d = false },
+    { k = "hideClock", t = "check",  l = "Hide clock", d = false },
+
+    { t = "header", l = "World map" },
+    { k = "wmScale",  t = "slider", l = "Scale (windowed map)", d = 1, min = 0.5, max = 1.5, step = 0.05 },
+    { k = "wmCoords", t = "check",  l = "Player and cursor coordinates", d = false },
+    { k = "wmFade",   t = "check",  l = "Fade while moving", d = false },
+    { k = "wmAlpha",  t = "slider", l = "Opacity while moving", d = 0.4, min = 0.1, max = 1, step = 0.05 },
+}
+MP.state = {}   -- what has been changed on the game's frames, so it can be undone
+DEFAULTS.map = TXT.ClampOptions(MP.OPTS, nil)
+
+MP.Clamp = function(src)
+    db.map = TXT.ClampOptions(MP.OPTS, src)
+end
+
+-- Player position on a map as 0-100, 0-100, or nil where the client gives
+-- none (instances). map nil = the map the player is on.
+MP.Pos = function(map)
+    if not C_Map or not C_Map.GetPlayerMapPosition then return nil end
+    if not map then
+        local ok, m = pcall(C_Map.GetBestMapForUnit, "player")
+        if not ok or not IsReadable(m) or not m then return nil end
+        map = m
+    end
+    local ok, pos = pcall(C_Map.GetPlayerMapPosition, map, "player")
+    if not ok or type(pos) ~= "table" or not pos.GetXY then return nil end
+    local x, y = pos:GetXY()
+    if not IsReadable(x) or not IsReadable(y) or type(x) ~= "number" or type(y) ~= "number" then return nil end
+    return x * 100, y * 100
+end
+
+-- Coordinates text under the minimap. Its frame only exists, and only
+-- updates (4 times a second), while the option is on.
+MP.Coords = function(on)
+    if on and not MP.coord then
+        MP.coord = CreateFrame("Frame", nil, _G.Minimap)
+        MP.coord:SetSize(120, 14)
+        MP.coord:SetPoint("TOP", _G.Minimap, "BOTTOM", 0, -4)
+        MP.coord.text = MP.coord:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        MP.coord.text:SetPoint("CENTER")
+        MP.coord:SetScript("OnUpdate", function(self, elapsed)
+            self.t = (self.t or 0) + elapsed
+            if self.t < 0.25 then return end
+            self.t = 0
+            local x, y = MP.Pos()
+            if x then self.text:SetFormattedText("%.1f, %.1f", x, y) else self.text:SetText("") end
+        end)
+    end
+    if MP.coord then MP.coord:SetShown(on) end
+end
+
+-- World map: applied each time it opens.
+MP.WorldShow = function()
+    local wm, c = _G.WorldMapFrame, db and db.map
+    if not wm or not c then return end
+    if (c.wmScale ~= 1 or MP.state.wmScaled) and not UF.Locked()
+        and not (wm.IsMaximized and wm:IsMaximized()) then
+        MP.state.wmScaled = true
+        wm:SetScale(c.wmScale)
+    end
+    if not c.wmFade then wm:SetAlpha(1) end
+end
+
+-- World map coordinates, 10 times a second while the map is open.
+MP.WorldTick = function(self, elapsed)
+    self.t = (self.t or 0) + elapsed
+    if self.t < 0.1 then return end
+    self.t = 0
+    local wm = _G.WorldMapFrame
+    local px, py = MP.Pos(wm.GetMapID and wm:GetMapID() or nil)
+    local cx, cy
+    local sc = wm.ScrollContainer
+    if sc and sc.GetNormalizedCursorPosition then
+        local ok, x, y = pcall(sc.GetNormalizedCursorPosition, sc)
+        if ok and type(x) == "number" and type(y) == "number" and x >= 0 and x <= 1 and y >= 0 and y <= 1 then
+            cx, cy = x * 100, y * 100
+        end
+    end
+    MP.wmText:SetText((px and string.format("Player %.1f, %.1f", px, py) or "Player --")
+        .. "     " .. (cx and string.format("Cursor %.1f, %.1f", cx, cy) or "Cursor --"))
+end
+
+-- World map options. Nothing is hooked until one of them is first used.
+MP.World = function()
+    local wm, c = _G.WorldMapFrame, db.map
+    if type(wm) ~= "table" or not wm.HookScript then return end
+    if (c.wmScale ~= 1 or c.wmFade or c.wmCoords) and not MP.wmEv then
+        wm:HookScript("OnShow", MP.WorldShow)
+        MP.wmEv = CreateFrame("Frame", nil, wm)   -- a child: it only ticks while the map is open
+        MP.wmEv:SetAllPoints(wm)
+        if wm.GetFrameLevel then MP.wmEv:SetFrameLevel(wm:GetFrameLevel() + 50) end
+        MP.wmText = MP.wmEv:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        MP.wmText:SetPoint("BOTTOMLEFT", wm, "BOTTOMLEFT", 14, 8)
+        MP.wmEv:SetScript("OnEvent", function(_, event)
+            if db and db.map and db.map.wmFade and wm:IsShown() then
+                wm:SetAlpha(event == "PLAYER_STARTED_MOVING" and db.map.wmAlpha or 1)
+            end
+        end)
+    end
+    if not MP.wmEv then return end
+    if c.wmFade then
+        pcall(MP.wmEv.RegisterEvent, MP.wmEv, "PLAYER_STARTED_MOVING")
+        pcall(MP.wmEv.RegisterEvent, MP.wmEv, "PLAYER_STOPPED_MOVING")
+    else
+        pcall(MP.wmEv.UnregisterEvent, MP.wmEv, "PLAYER_STARTED_MOVING")
+        pcall(MP.wmEv.UnregisterEvent, MP.wmEv, "PLAYER_STOPPED_MOVING")
+    end
+    MP.wmText:SetShown(c.wmCoords)
+    MP.wmEv:SetScript("OnUpdate", c.wmCoords and MP.WorldTick or nil)
+    if wm:IsShown() then MP.WorldShow() end
+end
+
+-- Fonts and colours of the two coordinate texts; the minimap border.
+MP.Paint = function()
+    if not db or not db.text then return end
+    local path = TXT.FontPath(db.text.font)
+    local r, g, b, a = TXT.Color()
+    if MP.coord then
+        TXT.Font(MP.coord.text, path, 11, db.text.outline)
+        MP.coord.text:SetTextColor(r, g, b, a)
+    end
+    if MP.wmText then
+        TXT.Font(MP.wmText, path, 12, db.text.outline)
+        MP.wmText:SetTextColor(r, g, b, a)
+    end
+    if MP.border then MP.border:SetBackdropBorderColor(Col(currentSkin.border)) end
+end
+
+-- Push db.map to the game's map frames. Waits for combat to end.
+MP.Apply = function()
+    if not db or type(db.map) ~= "table" then return end
+    if UF.Locked() then
+        TXT.AfterCombat("map", MP.Apply)
+        return
+    end
+    local c, st = db.map, MP.state
+    local mm, cluster = _G.Minimap, _G.MinimapCluster
+    if type(mm) == "table" then
+        -- square skin: mask, flat border, compass art out of the way
+        if c.skin ~= (st.skin == true) then
+            st.skin = c.skin
+            if c.skin then
+                st.w, st.h = mm:GetSize()
+                st.shape = _G.GetMinimapShape
+                _G.GetMinimapShape = function() return "SQUARE" end   -- what other addons ask
+                if mm.SetMaskTexture then pcall(mm.SetMaskTexture, mm, 130937) end
+                if not MP.border then
+                    MP.border = CreateFrame("Frame", nil, mm, "BackdropTemplate")
+                    MP.border:SetPoint("TOPLEFT", -1, 1)
+                    MP.border:SetPoint("BOTTOMRIGHT", 1, -1)
+                    MP.border:SetBackdrop({ edgeFile = WHITE, edgeSize = 1 })
+                end
+                MP.border:Show()
+            else
+                _G.GetMinimapShape = st.shape
+                if mm.SetMaskTexture then pcall(mm.SetMaskTexture, mm, 186178) end
+                if st.w and st.w > 0 then mm:SetSize(st.w, st.h) end
+                if MP.border then MP.border:Hide() end
+            end
+            TXT.Stash(_G.MinimapCompassTexture, c.skin)
+            TXT.Stash(_G.MinimapCompassTextureUnderlay, c.skin)
+        end
+        if c.skin and st.size ~= c.size then
+            st.size = c.size
+            mm:SetSize(c.size, c.size)
+            -- the map only redraws at its new size after a zoom change
+            if mm.GetZoom and mm.SetZoom then
+                local zoom = mm:GetZoom()
+                if type(zoom) == "number" then
+                    mm:SetZoom(zoom > 0 and 0 or 1)
+                    mm:SetZoom(zoom)
+                end
+            end
+        elseif not c.skin then
+            st.size = nil
+        end
+        if type(cluster) == "table" and (c.scale ~= 1 or st.scaled) then
+            st.scaled = true
+            cluster:SetScale(c.scale)
+        end
+        -- mouse wheel zoom: our script while on, the game's own back when off
+        if c.wheel ~= (st.wheel == true) then
+            st.wheel = c.wheel
+            if c.wheel then
+                st.wheelScript = mm:GetScript("OnMouseWheel")
+                if mm.EnableMouseWheel then mm:EnableMouseWheel(true) end
+                mm:SetScript("OnMouseWheel", function(self, delta)
+                    local z = self:GetZoom() + (delta > 0 and 1 or -1)
+                    local top = self:GetZoomLevels() - 1
+                    if z < 0 then z = 0 elseif z > top then z = top end
+                    self:SetZoom(z)
+                end)
+            else
+                mm:SetScript("OnMouseWheel", st.wheelScript)
+            end
+        end
+        -- zoom reset: hooked once, the first time the option is used
+        if c.reset and not st.zoomHook and hooksecurefunc and C_Timer and C_Timer.After then
+            st.zoomHook = true
+            hooksecurefunc(mm, "SetZoom", function(self, z)
+                if not db or not db.map or not db.map.reset then return end
+                st.zoomToken = (st.zoomToken or 0) + 1
+                local token = st.zoomToken
+                if type(z) == "number" and z > 0 then
+                    C_Timer.After(db.map.resetTime, function()
+                        if st.zoomToken == token and db.map.reset then self:SetZoom(0) end
+                    end)
+                end
+            end)
+        end
+        TXT.Stash(mm.ZoomIn or _G.MinimapZoomIn, c.hideZoom)
+        TXT.Stash(mm.ZoomOut or _G.MinimapZoomOut, c.hideZoom)
+        if type(cluster) == "table" then
+            TXT.Stash(cluster.ZoneTextButton or _G.MinimapZoneTextButton, c.hideZone)
+            TXT.Stash(cluster.BorderTop, c.hideZone)
+            TXT.Stash(cluster.Tracking or cluster.TrackingFrame or _G.MiniMapTracking, c.hideTrack)
+        end
+        TXT.Stash(_G.GameTimeFrame, c.hideCal)
+        TXT.Stash(_G.TimeManagerClockButton, c.hideClock)
+        MP.Coords(c.coords)
+    end
+    MP.World()
+    MP.Paint()
+end
+
+-- Show db.map on the Map tab.
+MP.Refresh = function()
+    if not MP.ws or not db or type(db.map) ~= "table" then return end
+    local was = suppress
+    suppress = true
+    TXT.ShowOptions(MP.ws, MP.OPTS, db.map, nil, nil)
+    suppress = was
+end
+
+-- Push the whole saved configuration to the screen again: skin, HUD, texts,
+-- unit frames, map. Returns false if the frame and map part had to wait for
+-- combat to end.
+function FRHW_ApplyNow()
+    if not db then return false end
+    ApplySkin(db.skin); ApplyAll()   -- skin, HUD elements, icons, texts
+    UF.Apply(); MP.Apply()           -- unit frames, map (these wait for combat to end)
+    FRHW_RefreshPanel()
+    local waiting = UF.Locked()
+    DEFAULT_CHAT_FRAME:AddMessage("|cff33ccffForeverWarriorHUD|r " .. (waiting
+        and "settings applied; frame and map changes will finish when combat ends."
+        or "settings applied."))
+    return not waiting
+end
+
+FRHW_MAP = MP
+FRHW_ApplyMap = function() if db then MP.Apply() end end
+
+-- ============================== Map tab ==============================
+do
+    local page = CreateFrame("Frame", nil, panel)
+    page:SetPoint("TOPLEFT", 8, -70)
+    page:SetPoint("BOTTOMRIGHT", -8, 26)
+    page:Hide()
+    AddTab("map", "FRHWTabMap", "Map", page)
+    local scroll, child = MakeScroll("FRHWMapScroll", page, -4)
+    local flow = NewFlow(scroll, child)
+    NoteRow(flow, "Each option changes the game's own map only while it is ticked; untick it to put things back.")
+    MP.ws = TXT.BuildOptions(flow, child, "FRHWMPO_", MP.OPTS,
+        function() return db.map end,
+        function(o, isSlider)
+            MP.Apply()
+            if not isSlider then MP.Refresh() end
+        end)
+
+    -- Apply: every change already takes effect as it is made; this pushes the
+    -- whole configuration again in one go and says so, for peace of mind and
+    -- for changes that were waiting on combat.
+    local apply = MakeButton(panel, "Apply", 0, 0, 70, 20, function() FRHW_ApplyNow() end, "FRHWApplyButton")
+    apply:ClearAllPoints()
+    apply:SetPoint("TOPRIGHT", -140, -6)
+
+    -- seven tabs need a wider window than the original four
+    if panel.SetResizeBounds then panel:SetResizeBounds(600, 360, 1000, 860) end
+    if panel:GetWidth() < 620 then panel:SetWidth(620) end
+end
+
 -- The swing bar's colours depend on both the skin and the user's own swing
 -- options, so they are painted here and called from ApplySkin and from
 -- ApplyElement("swing") alike.
@@ -2985,7 +5637,7 @@ PaintSwing = function()
     swing:SetStatusBarColor(r, g, b, 1)
     -- same rule as 1.8.0: the background is the bar colour at a quarter strength
     swing.bg:SetVertexColor(r * 0.25, g * 0.25, b * 0.25, e.bgAlpha)
-    swing.time:SetTextColor(Col(currentSkin.text, 1))
+    swing.time:SetTextColor(TXT.Color())
     swing.spark:SetVertexColor(Col(currentSkin.spark, 1))
     swing.flash:SetVertexColor(Col(currentSkin.spark, 0.45))
     for i = 1, #swing.ticks do
@@ -3004,12 +5656,12 @@ ApplySkin = function(key)
     -- HUD
     energy:SetStatusBarColor(Col(skin.bar, 1))
     energy.bg:SetVertexColor(Col(skin.barBg))
-    energy.value:SetTextColor(Col(skin.text, 1))
+    energy.value:SetTextColor(TXT.Color())
     -- the regen bar reads as a cooler sibling of the energy bar: the same
     -- accent, dimmed, so the two are distinguishable without a new palette entry
     regen:SetStatusBarColor(Col(skin.accent, 1))
     regen.bg:SetVertexColor(Col(skin.barBg))
-    regen.value:SetTextColor(Col(skin.text, 1))
+    regen.value:SetTextColor(TXT.Color())
     PaintSwing()
     for i = 1, MAX_COMBO_POINTS do
         cpBars[i]:SetStatusBarColor(Col(skin.combo, 1))
@@ -3017,11 +5669,13 @@ ApplySkin = function(key)
     end
     for _, btn in pairs(spellIcons) do
         btn:SetBackdropBorderColor(Col(skin.iconEdge))
-        btn.timer:SetTextColor(Col(skin.text, 1))
+        btn.timer:SetTextColor(TXT.Color())
         btn._flashUntil = nil   -- a running ready flash would keep the old colour
         btn.glow:SetVertexColor(Col(skin.accent, 0.35))
     end
     for i = 1, #edgeKits do PaintEdges(edgeKits[i], skin) end
+    UF.Paint()
+    MP.Paint()
 
     -- options window
     panel:SetBackdropColor(Col(skin.panel))
@@ -3090,6 +5744,7 @@ function FRHW_RefreshPanel()
         elemW[key]:SetValue(db.elements[key].w)
         elemH[key]:SetValue(db.elements[key].h)
         elemA[key]:SetValue(db.elements[key].alpha or 1)
+        elemS[key]:SetValue(db.elements[key].scale or 1)
     end
     local sw = db.elements.swing
     swingUI.skinCB:SetChecked(sw.useSkinColor)
@@ -3115,6 +5770,9 @@ function FRHW_RefreshPanel()
     ME.artDD.Refresh()
     ME.bannerDD.Refresh()
     RefreshConfig()
+    TXT.Refresh()
+    UF.Refresh()
+    MP.Refresh()
     suppress = was
     if RefreshProfileList and pageProfiles:IsShown() then RefreshProfileList() end
 end
@@ -3136,7 +5794,7 @@ local function UpdateEnergy()
     local max = UnitPowerMax("player", idx)
     energy:SetMinMaxValues(0, max)
     energy:SetValue(cur)
-    energy.value:SetFormattedText("%d / %d", cur, max)
+    TXT.Energy(energy.value, cur, max)
 end
 
 -- Energy regeneration, measured rather than guessed: the difference in energy
@@ -3186,7 +5844,7 @@ local function UpdateRegen(elapsed)
     regen:SetMinMaxValues(0, full)
     regen:SetValue(math.min(regenRate, full))
     if e.showRate then
-        regen.value:SetFormattedText("%.1f /s", regenRate)
+        TXT.Regen(regen.value, regenRate)
     else
         regen.value:SetText("")
     end
@@ -3223,11 +5881,11 @@ local function UpdateSwingBar(elapsed)
     local remaining = dur - swingElapsed
     if e.text and e.textMode ~= "none" then
         if e.textMode == "remaining" then
-            swing.time:SetFormattedText("%.2f s", remaining)
+            swing.time:SetFormattedText(TXT.swingRemain or "%.2f s", remaining)
         elseif e.textMode == "percent" then
             swing.time:SetFormattedText("%d%%", math.floor(swingElapsed / dur * 100 + 0.5))
         else
-            swing.time:SetFormattedText("%.2f / %.2f s", swingElapsed, dur)
+            swing.time:SetFormattedText(TXT.swingBoth or "%.2f / %.2f s", swingElapsed, dur)
         end
         swing.time:Show()
     else
@@ -3273,6 +5931,19 @@ function FRHW_UpdateCombo()
     end
 end
 
+-- Slice and Dice is a buff on the player, not a cooldown: its icon shows the
+-- time left on the buff (the sweep and countdown run down to the buff's end).
+local SND_ID = 5171
+local function SndAura()
+    if not (C_UnitAuras and C_UnitAuras.GetAuraDataByIndex) then return nil end
+    for i = 1, 40 do
+        local ok, d = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, "HELPFUL")
+        if not ok or not d then return nil end
+        if d.spellId == SND_ID then return d end
+    end
+    return nil
+end
+
 -- Ask the client which spell ID is behind each spellbook name. Rank 1 IDs are
 -- what the table holds; a character who knows rank 5 gets rank 5's icon and
 -- cooldown. Anything the client cannot name keeps the table ID.
@@ -3298,6 +5969,8 @@ end
 -- "7" under a minute, "2:05" under an hour. Only ever called with a plain
 -- number that passed IsReadable.
 local function FormatRemaining(rem)
+    local f = db and db.text and db.text.timer.format
+    if f and f ~= "auto" then return TXT.Timer(rem, f) end
     -- under a minute: seconds and hundredths ("7.43"); above it, minutes and seconds
     if rem < 60 then return string.format("%.2f", rem) end
     local sec = math.ceil(rem)
@@ -3327,7 +6000,16 @@ local function UpdateSpellIcon(btn)
         btn:SetBackdropBorderColor(Col(currentSkin.iconEdge))
     end
     local ok, info
-    if C_Spell and C_Spell.GetSpellCooldown then ok, info = pcall(C_Spell.GetSpellCooldown, id) end
+    if id == SND_ID then
+        -- Slice and Dice is a buff on you: the sweep and the countdown run down
+        -- the time it has left (no buff: no sweep)
+        local d = SndAura()
+        if d and IsReadable(d.expirationTime) and IsReadable(d.duration) and d.duration > 0 then
+            ok, info = true, { startTime = d.expirationTime - d.duration, duration = d.duration }
+        else
+            ok, info = true, { startTime = 0, duration = 0 }
+        end
+    elseif C_Spell and C_Spell.GetSpellCooldown then ok, info = pcall(C_Spell.GetSpellCooldown, id) end
     if not ok or type(info) ~= "table" then
         btn.timer:SetText("")
         btn._cooling = false
@@ -3447,6 +6129,9 @@ driver:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         swingElapsed = 0
     elseif event == "SPELL_UPDATE_COOLDOWN" or event == "SPELL_DATA_LOAD_RESULT" then
         UpdateAllSpells()
+    elseif event == "UNIT_AURA" then
+        -- the Slice and Dice icon follows the player's buffs
+        if spellIcons.snd then UpdateSpellIcon(spellIcons.snd) end
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         -- unit, cast GUID, spell ID
         if elems.trail:IsShown() then ME.LogCast(arg3) end
@@ -3474,6 +6159,7 @@ end
 pcall(function() driver:RegisterUnitEvent("UNIT_POWER_UPDATE", "player") end)
 pcall(function() driver:RegisterUnitEvent("UNIT_DISPLAYPOWER", "player") end)
 pcall(function() driver:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player") end)
+pcall(function() driver:RegisterUnitEvent("UNIT_AURA", "player") end)
 driver:SetScript("OnUpdate", function(_, elapsed)
     if not db then return end
     if elems.swing:IsShown() then UpdateSwingBar(elapsed) end
@@ -3505,7 +6191,9 @@ boot:SetScript("OnEvent", function()
         if driver.UnregisterAllEvents then driver:UnregisterAllEvents() end
         return
     end
-    if type(ForeverWarriorHUD_DB) ~= "table" then ForeverWarriorHUD_DB = {} end
+    if type(ForeverWarriorHUD_DB) ~= "table" then
+        ForeverWarriorHUD_DB = {}
+    end
     db = ForeverWarriorHUD_DB
     for k, v in pairs(DEFAULTS) do
         if db[k] == nil then db[k] = (type(v) == "table") and DeepCopy(v) or v end
@@ -3537,6 +6225,20 @@ boot:SetScript("OnEvent", function()
     -- an unknown skin name falls back to the default look
     if not SKIN_BY_KEY[db.skin] then db.skin = SKIN_DEFAULT end
     db.cooldownText = db.cooldownText ~= false
+    TXT.LoadSharedFonts()
+    TXT.Clamp(db.text)
+    UF.Clamp(db.frames)
+    MP.Clamp(db.map)
+    -- once: a countdown still sitting on the old default (centre, size 12) moves to the corner
+    if not db.timerCorner then
+        db.timerCorner = true
+        local tt = db.text.timer
+        if tt.anchor == "CENTER" and tt.x == 0 and tt.y == 0 then
+            tt.anchor, tt.x, tt.y = "BOTTOMRIGHT", -1, 1
+            if tt.size == 12 then tt.size = 10 end
+        end
+    end
+    for _, sp in pairs(db.spells) do TXT.ClampItem(sp, sp) end
     ResolveSpells()
     ME.ClampNotify(db.notify)
     ME.ClampCustom(db.custom, db.customOn)
@@ -3551,6 +6253,8 @@ boot:SetScript("OnEvent", function()
     db.orientation = "h"
     for _, sp in pairs(db.spells) do sp.rot = ME.Norm(sp.rot, true) end
     ApplySkin(db.skin)
+    UF.Apply()
+    MP.Apply()
     ApplyAll()
     ReflowAll(true)
     FRHW_RefreshPanel()
@@ -3576,6 +6280,14 @@ SlashCmdList.FOREVERWARRIORHUD = function(msg)
         panel:Show(); SelectTab("config"); FRHW_RefreshPanel()
     elseif msg == "profiles" or msg == "profile" then
         panel:Show(); SelectTab("profiles"); FRHW_RefreshPanel()
+    elseif msg == "text" or msg == "font" or msg == "fonts" then
+        panel:Show(); SelectTab("text"); FRHW_RefreshPanel()
+    elseif msg == "frames" or msg == "frame" then
+        panel:Show(); SelectTab("frames"); FRHW_RefreshPanel()
+    elseif msg == "apply" then
+        FRHW_ApplyNow()
+    elseif msg == "map" or msg == "minimap" then
+        panel:Show(); SelectTab("map"); FRHW_RefreshPanel()
     elseif msg == "skins" then
         panel:Show(); SelectTab("skins"); FRHW_RefreshPanel()
     elseif msg:match("^skin%s") then
