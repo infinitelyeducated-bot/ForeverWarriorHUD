@@ -2669,8 +2669,8 @@ end
 
 local function ApplyConfig(src)
     if type(src) ~= "table" then return false end
-    db.baseX       = Num(src.baseX, -2000, 2000, DEFAULTS.baseX)
-    db.baseY       = Num(src.baseY, -2000, 2000, DEFAULTS.baseY)
+    db.baseX       = Num(src.baseX, -4000, 4000, DEFAULTS.baseX)
+    db.baseY       = Num(src.baseY, -2500, 2500, DEFAULTS.baseY)
     db.scale       = Num(src.scale, 0.5, 2.5, DEFAULTS.scale)
     db.gridSize    = Num(src.gridSize, 8, 64, DEFAULTS.gridSize)
     db.shown       = src.shown ~= false
@@ -2694,8 +2694,8 @@ local function ApplyConfig(src)
         local e = db.elements[key]
         if type(s) == "table" then
             e.enabled = s.enabled ~= false
-            e.x       = Num(s.x, -2000, 2000, def.x)
-            e.y       = Num(s.y, -2000, 2000, def.y)
+            e.x       = Num(s.x, -4000, 4000, def.x)
+            e.y       = Num(s.y, -2500, 2500, def.y)
             e.w       = Num(s.w, 4, 600, def.w)
             e.h       = Num(s.h, 4, 600, def.h)
             e.alpha   = Num(s.alpha, 0.05, 1, def.alpha)
@@ -2720,8 +2720,8 @@ local function ApplyConfig(src)
         local e = db.spells[key]
         if type(s) == "table" then
             e.enabled = s.enabled == true
-            e.x       = Num(s.x, -2000, 2000, def.x)
-            e.y       = Num(s.y, -2000, 2000, def.y)
+            e.x       = Num(s.x, -4000, 4000, def.x)
+            e.y       = Num(s.y, -2500, 2500, def.y)
             e.w       = Num(s.w, 6, 200, def.w)
             e.h       = Num(s.h, 6, 200, def.h)
             e.rot     = ME.Norm(s.rot, true)
