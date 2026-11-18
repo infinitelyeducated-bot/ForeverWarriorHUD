@@ -977,11 +977,43 @@ function ME.Up(self, button)
     end
 end
 
+-- What the wheel does with the keys held now: CTRL = "scale", CTRL + SHIFT =
+-- "w" (wider / narrower), CTRL + ALT = "h" (taller / shorter). Nothing without
+-- CTRL, and nothing with all three (that chord belongs to the party window).
+ME.SIZE_STEP = 2   -- width / height change per wheel notch
+function ME.WheelMode()
+    if not (IsControlKeyDown and IsControlKeyDown()) then return nil end
+    local shift = IsShiftKeyDown and IsShiftKeyDown() and true or false
+    local alt = IsAltKeyDown and IsAltKeyDown() and true or false
+    if shift and alt then return nil end
+    if shift then return "w" end
+    if alt then return "h" end
+    return "scale"
+end
+-- one notch of width or height on a table that has cfg.w / cfg.h
+function ME.Resize(cfg, mode, delta, lo, hi)
+    local v = cfg[mode]
+    if type(v) ~= "number" then return false end
+    v = math.floor(v + ((delta > 0) and ME.SIZE_STEP or -ME.SIZE_STEP) + 0.5)
+    if v < lo then v = lo elseif v > hi then v = hi end
+    if v == cfg[mode] then return false end
+    cfg[mode] = v
+    return true
+end
+
 function ME.Wheel(self, delta)
     if not ME.Active() then return end
-    if not (IsControlKeyDown and IsControlKeyDown()) then return end
+    local mode = ME.WheelMode()
+    if not mode then return end
     local cfg = self._cfg()
-    local sc = (cfg.scale or 1) + ((delta > 0) and ME.SCALE_STEP or -ME.SCALE_STEP)
+    if mode ~= "scale" then
+        -- icons 6..200, bars and rows 4..600: the same limits the saved settings are held to
+        local lo, hi = 4, 600
+        if self._freeRot then lo, hi = 6, 200 end
+        if ME.Resize(cfg, mode, delta, lo, hi) then self._reapply() end
+        return
+    end
+    local sc =(cfg.scale or 1) + ((delta > 0) and ME.SCALE_STEP or -ME.SCALE_STEP)
     sc = math.floor(sc * 100 + 0.5) / 100
     if sc < 0.2 then sc = 0.2 elseif sc > 10 then sc = 10 end
     cfg.scale = sc
@@ -992,14 +1024,59 @@ end
 -- The item tip sits to the LEFT of the cursor. It shows only while CTRL is held,
 -- or once the mouse has rested on the item for 10 seconds (then it stays).
 ME.TIP_DELAY = 10
+
+-- The hover box is held about an inch away from the cursor, so the cursor
+-- never covers its text: to the left of it, or to the right where there is
+-- no room on the left. It follows the cursor while it is up.
+ME.TIP_GAP = 96   -- screen pixels: an inch on a 96 dpi screen
+function ME.TipPlace()
+    if not GetCursorPosition then return end
+    local s = UIParent:GetEffectiveScale()
+    if not s or s <= 0 then s = 1 end
+    local x, y = GetCursorPosition()
+    if type(x) ~= "number" or type(y) ~= "number" then return end
+    x, y = x / s, y / s
+    local gap = ME.TIP_GAP / s
+    local w = GameTooltip.GetWidth and GameTooltip:GetWidth() or 0
+    if type(w) ~= "number" then w = 0 end
+    GameTooltip:ClearAllPoints()
+    if x - gap - w < 0 then
+        GameTooltip:SetPoint("LEFT", UIParent, "BOTTOMLEFT", x + gap, y)
+    else
+        GameTooltip:SetPoint("RIGHT", UIParent, "BOTTOMLEFT", x - gap, y)
+    end
+end
+ME.tipFollow = CreateFrame("Frame")
+ME.tipFollow:SetSize(1, 1)
+ME.tipFollow:Show()
+-- use in place of GameTooltip:SetOwner(owner, <anchor>): add the lines, then GameTooltip:Show()
+function ME.TipNear(owner)
+    GameTooltip:SetOwner(owner, "ANCHOR_NONE")
+    ME.tipFor, ME.tipSeen = owner, false
+    ME.TipPlace()
+    ME.tipFollow:SetScript("OnUpdate", function(self)
+        local up = GameTooltip:IsShown()
+        if up and GameTooltip.GetOwner and GameTooltip:GetOwner() ~= ME.tipFor then up = false end
+        if up then
+            ME.tipSeen = true
+            ME.TipPlace()
+        elseif ME.tipSeen then
+            ME.tipFor = nil
+            self:SetScript("OnUpdate", nil)
+        end
+    end)
+end
+
 function ME.ShowTip(self)
-    GameTooltip:SetOwner(self, "ANCHOR_CURSOR_LEFT")
+    ME.TipNear(self)
     GameTooltip:SetText(self._label or "HUD item", 1, 1, 1)
     if db.locked then
         GameTooltip:AddLine("Locked. Untick Lock on the HUD tab to edit.", 1, 0.6, 0.6, true)
     else
         GameTooltip:AddLine("CTRL + hold left button: move", nil, nil, nil, true)
         GameTooltip:AddLine("CTRL + mouse wheel: size", nil, nil, nil, true)
+        GameTooltip:AddLine("CTRL + SHIFT + mouse wheel: width", nil, nil, nil, true)
+        GameTooltip:AddLine("CTRL + ALT + mouse wheel: height", nil, nil, nil, true)
         GameTooltip:AddLine(self._freeRot and "CTRL + hold right button and drag: turn"
             or "CTRL + hold right button and drag: turn (quarter turns)", nil, nil, nil, true)
         GameTooltip:AddLine("Right double-click: original orientation", nil, nil, nil, true)
