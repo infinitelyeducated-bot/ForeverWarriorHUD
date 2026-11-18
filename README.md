@@ -66,7 +66,7 @@ Position and turning are done with the mouse; size is done both ways: CTRL + whe
 - **Show** - The switch on the right of the element's heading.
 - **Width / Height** - The shape of the bar or of one pip or icon.
 - **Opacity** - 0.1 to 1.
-- **Scale** - Size of the whole item, 0.5 to 3. The same value as CTRL + wheel on the item. Hold CTRL and roll the wheel over this slider to step it by 0.05.
+- **Scale** - Size of the whole item, 0.5 and up, with no maximum. The same value as CTRL + wheel on the item. Hold CTRL and roll the wheel over this slider to step it by 0.25.
 
 **Rage bar and Rage regen**
 
@@ -107,7 +107,7 @@ Position and turning are done with the mouse; size is done both ways: CTRL + whe
 
 - **On** - Gives the ability an icon. New icons appear in a grid above the HUD; move them with the mouse.
 - **Opacity** - 0.1 to 1 for that icon.
-- **Scale** - Size of this icon, 0.5 to 3. The same value as CTRL + wheel on the icon. Hold CTRL and roll the wheel over this slider to step it by 0.05.
+- **Scale** - Size of this icon, 0.5 and up, with no maximum. The same value as CTRL + wheel on the icon. Hold CTRL and roll the wheel over this slider to step it by 0.25.
 
 On by default: Charge, Intercept, Pummel, Overpower, Whirlwind, Bloodrage, Berserker Rage. The full list with spell IDs is at the end of this page.
 
