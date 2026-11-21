@@ -1010,6 +1010,14 @@ function ME.Wheel(self, delta)
         -- icons 6..200, bars and rows 4..600: the same limits the saved settings are held to
         local lo, hi = 4, 600
         if self._freeRot then lo, hi = 6, 200 end
+        -- a bar: the limits from the HUD tab's table (they were the sliders' limits)
+        if ME.ELEM_INFO and not self._freeRot then
+            for _, info in ipairs(ME.ELEM_INFO) do
+                if db.elements[info.key] == cfg then
+                    if mode == "w" then lo, hi = info.wmin, info.wmax else lo, hi = info.hmin, info.hmax end
+                end
+            end
+        end
         if ME.Resize(cfg, mode, delta, lo, hi) then self._reapply() end
         return
     end
@@ -2285,46 +2293,26 @@ local ELEMENT_INFO = {
     { key = "combo",  label = "Combo points", wmin = 4,  wmax = 60,  hmin = 4, hmax = 60 },
     { key = "trail",  label = "Recent actions", wmin = 10, wmax = 60, hmin = 10, hmax = 60 },
 }
--- Width, height and opacity only: place, size and rotation are done with the
--- mouse on the item itself.
--- A Scale slider also takes CTRL + mouse wheel: up is bigger, down is smaller, a step of 0.25.
-ME.ScaleWheel = function(sl)
-    if not sl.EnableMouseWheel then return end
-    sl:EnableMouseWheel(true)
-    sl:SetScript("OnMouseWheel", function(self, delta)
-        if not (IsControlKeyDown and IsControlKeyDown()) then return end
-        self:SetValue((self:GetValue() or 1) + (delta > 0 and ME.SCALE_STEP or -ME.SCALE_STEP))
-    end)
-end
+-- Opacity only: place, size, width, height and rotation are done with the
+-- mouse on the item itself (see "Mouse editing").
 -- one bar for energy, regen and swing: the regen overlay sits on the energy bar, the swing strip under it
 ME.joinCB = MakeCheck(hudChild, "FRHWJoinCB", 12, 0, "Join energy, regen and swing into one bar", function(self)
     db.combined = self:GetChecked() and true or false
     for _, k in ipairs({ "energy", "regen", "swing" }) do ApplyElement(k) end
 end)
 Row(hudFlow, LAYOUT.check, ME.joinCB)
-local elemCB, elemW, elemH, elemA, elemS = {}, {}, {}, {}, {}
+ME.ELEM_INFO = ELEMENT_INFO   -- the mouse keeps each bar's width and height inside these limits
+local elemCB, elemA = {}, {}
 for _, info in ipairs(ELEMENT_INFO) do
     local key = info.key
     elemCB[key] = MakeCheck(hudChild, "FRHWCB_" .. key, 340, 0, "Show", function(self)
         db.elements[key].enabled = self:GetChecked() and true or false
         ApplyElement(key)
     end)
-    elemW[key] = MakeSlider(hudChild, "FRHWW_" .. key, 12,  0, 190, info.wmin, info.wmax, 1, "Width", function(v)
-        db.elements[key].w = v; ApplyElement(key)
-    end)
-    elemH[key] = MakeSlider(hudChild, "FRHWH_" .. key, 240, 0, 190, info.hmin, info.hmax, 1, "Height", function(v)
-        db.elements[key].h = v; ApplyElement(key)
-    end)
     elemA[key] = MakeSlider(hudChild, "FRHWA_" .. key, 12,  0, 190, 0.1, 1, 0.05, "Opacity", function(v)
         db.elements[key].alpha = v; ApplyElement(key)
     end)
-    -- size from the menu as well as with CTRL + wheel on the item (same saved value)
-    elemS[key] = MakeSlider(hudChild, "FRHWS_" .. key, 240, 0, 190, 0.5, 10, 0.05, "Scale", function(v)
-        db.elements[key].scale = v; ApplyElement(key)
-    end)
-    ME.ScaleWheel(elemS[key])
     HeaderRow(hudFlow, info.label, elemCB[key])
-    Row(hudFlow, LAYOUT.slider, elemW[key], elemH[key])
     if key == "energy" then
         -- the number on the bar has its own switch, next to the bar's options
         ME.valueCB = MakeCheck(hudChild, "FRHWEnergyText", 0, 0, "Show the value as text", function(self)
@@ -2335,7 +2323,6 @@ for _, info in ipairs(ELEMENT_INFO) do
     else
         Row(hudFlow, LAYOUT.slider, elemA[key])
     end
-    Row(hudFlow, LAYOUT.slider, elemS[key])
     if key == "swing" then BuildSwingOptions(hudFlow) end
     if key == "regen" then BuildRegenOptions(hudFlow) end
     ME.Mark(key, hudFlow, hudChild)   -- where this element's later rows go (2 build: its text options)
@@ -2361,7 +2348,7 @@ StaticPopupDialogs["FRHW_CONFIRM_RESET"] = {
     OnAccept = function() ResetToDefaults() end,
     timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
 }
-NoteRow(hudFlow, "Place, size and turn every item with the mouse on the item itself, or set its Scale here or on the Abilities tab. The Help tab shows how.")
+NoteRow(hudFlow, "Every item is placed and sized with the mouse on the item itself while this window is open: CTRL + left drag moves, CTRL + wheel sizes, CTRL + SHIFT + wheel sets the width, CTRL + ALT + wheel the height, CTRL + right drag turns. The Help tab shows how.")
 
 -- ========================== Config tab ==========================
 local cfgScroll, cfgChild = MakeScroll("FRHWConfigScroll", pageConfig, -4)
@@ -2394,7 +2381,7 @@ for _, n in ipairs(ME.NOTIFY) do
 end
 DividerRow(cfgFlow)
 
-local cfgCB, cfgA, cfgS = {}, {}, {}
+local cfgCB, cfgA = {}, {}
 for _, a in ipairs(ABILITIES) do
     local key = a.key
     cfgCB[key] = MakeCheck(cfgChild, "FRHWCFGCB_" .. key, 340, 0, "On", function(self)
@@ -2404,13 +2391,8 @@ for _, a in ipairs(ABILITIES) do
     cfgA[key] = MakeSlider(cfgChild, "FRHWCFGA_" .. key, 6,   0, 190, 0.1, 1, 0.05, "Opacity", function(v)
         db.spells[key].alpha = v; ApplySpell(key)
     end)
-    -- icon size from the menu (the same saved value as CTRL + wheel on the icon)
-    cfgS[key] = MakeSlider(cfgChild, "FRHWCFGS_" .. key, 230, 0, 190, 0.5, 10, 0.05, "Scale", function(v)
-        db.spells[key].scale = v; ApplySpell(key)
-    end)
-    ME.ScaleWheel(cfgS[key])
     HeaderRow(cfgFlow, a.name, cfgCB[key])
-    Row(cfgFlow, LAYOUT.slider, cfgA[key], cfgS[key])
+    Row(cfgFlow, LAYOUT.slider, cfgA[key])
     -- a thin divider under each spell keeps the list readable
     DividerRow(cfgFlow)
 end
@@ -2422,7 +2404,6 @@ RefreshConfig = function()
         local key = a.key
         cfgCB[key]:SetChecked(db.spells[key].enabled)
         cfgA[key]:SetValue(db.spells[key].alpha or 1)
-        cfgS[key]:SetValue(db.spells[key].scale or 1)
     end
 end
 
@@ -2976,7 +2957,8 @@ do
     HeaderRow(flow, "Editing the HUD with the mouse")
     Para("This only works while this window is open and Lock (HUD tab) is off. Point at any bar or icon: it lights up and a tooltip names it.")
     Para("MOVE: hold CTRL, then hold the left mouse button on the item. It follows the cursor. Let go to drop it.")
-    Para("SIZE: hold CTRL and roll the mouse wheel over the item. Up is bigger, down is smaller. Or use its Scale slider: bars are on the HUD tab, icons on the Abilities tab. Hold CTRL and roll the wheel over a Scale slider too (a step of 0.05). All three give the same size.")
+    Para("SIZE: hold CTRL and roll the mouse wheel over the item. Up is bigger, down is smaller.")
+    Para("WIDTH and HEIGHT: hold CTRL and SHIFT and roll the wheel to make the item wider or narrower; hold CTRL and ALT and roll it to make it taller or shorter. There are no size sliders in this window: the mouse does it all.")
     Para("TURN: hold CTRL, then hold the right mouse button on the item and drag around it. It stays as you leave it.")
     Para("STRAIGHTEN: double-click the right mouse button on the item. It goes back to its original orientation.")
     Para("Icons turn to any angle. Bars, combo points and the recent-actions row turn in quarter turns; their text stays upright.")
@@ -3240,10 +3222,7 @@ function FRHW_RefreshPanel()
     for _, info in ipairs(ELEMENT_INFO) do
         local key = info.key
         elemCB[key]:SetChecked(db.elements[key].enabled)
-        elemW[key]:SetValue(db.elements[key].w)
-        elemH[key]:SetValue(db.elements[key].h)
         elemA[key]:SetValue(db.elements[key].alpha or 1)
-        elemS[key]:SetValue(db.elements[key].scale or 1)
         ME.joinCB:SetChecked(db.combined)
     end
     local sw = db.elements.swing
